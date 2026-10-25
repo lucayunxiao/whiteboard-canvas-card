@@ -1,42 +1,65 @@
 /**
- * Canvas Card - Infinite Canvas Drawing & Printing Card for Home Assistant Lovelace
- * Repository: https://github.com/lucayunxiao/canvas-card
- * Version: 1.0.0
+ * Whiteboard Canvas Card - Infinite Canvas Drawing & 300 DPI Printing Card for Home Assistant Lovelace
+ * Repository: https://github.com/lucayunxiao/whiteboard-canvas-card
+ * Version: 1.0.9
  * License: MIT
  *
  * 100% Pure English UI
  * Features:
  *  - Infinite Canvas with smooth Quadratic Bézier stroke interpolation & anti-aliasing
- *  - Dual-finger Pinch-to-Zoom (0.5x - 5.0x) & Pan with gesture isolation
- *  - Inline Draggable Floating Text Box with scale compensation & IME flush protection
- *  - Auto Bounding Box Detection & 300 DPI Physical Paper Rasterizer (A4, A3, Letter, Thermal)
- *  - Action Workflows: Save + New, Discard + New, Print + New, History (IndexedDB)
- *  - Multi-tier Print Engine: Direct IPP (Port 631), HA Service Bridge, Gateway, and OS Native Print
- *  - Full GUI Visual Form Configuration Editor (<ha-form>)
+ *  - Continuous, Boundless Viewport Grid / Dot Matrix tiling dynamically with pan & zoom
+ *  - High-performance GPU hardware accelerated 3200x3200 virtual drawing surface
+ *  - Desktop CAD/Figma Navigation: Mouse wheel cursor-centered zoom + Right/Middle-click drag to pan
+ *  - Mobile Navigation Pod: Bottom-right [-] [100%] [+] zoom buttons & Toolbar [Hand] tool for jitter-free pan
+ *  - Dual-touch gesture isolation with zero ghost/stray dots
+ *  - Automatic Viewport Centering & Full-Screen Zoom-to-Fit Content
+ *  - Multi-Terminal Real-Time Sync: Dual-layer BroadcastChannel + HA WebSocket event bus (canvas_card_sync)
+ *  - Real-Time Undo / Redo / Clear / Stroke / Text / History Restore synchronization across all terminals
+ *  - Interactive Print Framing Dialog: Crop & Print with aspect-ratio locked framing box (A4, A5, A3, Letter, Thermal)
+ *  - Multi-tier Print Engine: Direct IPP (Port 631), HA Service Bridge, Gateway, OS Print
+ *  - Standalone Printing Toggle & Dynamic Header Synchronization
+ *  - Configurable History retention limit (Default: 30, Max: 100) with automatic FIFO pruning
+ *  - Flattened GUI Visual Form Editor (<ha-form>) with deselectable dropdowns
  */
 
 (function () {
   "use strict";
 
   // Prevent duplicate registration
-  if (customElements.get("canvas-card")) return;
+  if (customElements.get("whiteboard-canvas-card")) return;
 
-  const CARD_VERSION = "1.0.0";
+  const CARD_VERSION = "1.1.0";
   const DB_NAME = "CanvasCardDB";
   const DB_VERSION = 1;
   const STORE_NAME = "history";
 
-  // Paper Sizes Definition (Dimensions in mm at 300 DPI: 1 inch = 25.4mm, DPI = 300)
+  // Standard Paper Profiles (Dimensions in mm and 300 DPI raster pixels: 1 inch = 25.4 mm)
   const PAPER_PROFILES = {
     a4: { name: "A4 (210 x 297 mm)", widthMm: 210, heightMm: 297, widthPx: 2480, heightPx: 3508 },
+    a5: { name: "A5 (148 x 210 mm)", widthMm: 148, heightMm: 210, widthPx: 1748, heightPx: 2480 },
     a3: { name: "A3 (297 x 420 mm)", widthMm: 297, heightMm: 420, widthPx: 3508, heightPx: 4960 },
-    letter: { name: "Letter (8.5 x 11 in)", widthMm: 215.9, heightMm: 279.4, widthPx: 2550, heightPx: 3300 },
-    thermal80: { name: "Thermal Receipt (80 mm)", widthMm: 80, heightMm: null, widthPx: 945, heightPx: null },
-    fit: { name: "Fit Content (1:1 Bounding Box)", widthMm: null, heightMm: null, widthPx: null, heightPx: null }
+    letter: { name: "US Letter (8.5 x 11 in)", widthMm: 215.9, heightMm: 279.4, widthPx: 2550, heightPx: 3300 },
+    thermal80: { name: "Thermal Receipt (80 mm)", widthMm: 80, heightMm: 140, widthPx: 945, heightPx: 1654 }
+  };
+
+  const DEFAULT_CONFIG = {
+    title: "Canvas Studio",
+    enable_printing: false,
+    printer_ip: "",
+    printer_port: 631,
+    print_mode: "ipp", // 'ipp', 'ha_service', 'gateway', 'os_print'
+    ha_print_service: "notify.printer",
+    gateway_url: "",
+    canvas_bg: "grid", // 'grid', 'blank', 'dots'
+    confirm_discard: true,
+    height: 560,
+    max_history_items: 30,
+    sync_channel: "canvas_studio",
+    enable_sync: true
   };
 
   // =========================================================================
-  // IndexedDB Storage Manager for Persistent History
+  // IndexedDB Storage Manager for Persistent History with Configurable Limit
   // =========================================================================
   class CanvasHistoryDB {
     static async getDB() {
@@ -54,9 +77,9 @@
       });
     }
 
-    static async saveItem(item) {
+    static async saveItem(item, maxLimit = 30) {
       const db = await this.getDB();
-      return new Promise((resolve, reject) => {
+      await new Promise((resolve, reject) => {
         const tx = db.transaction(STORE_NAME, "readwrite");
         const store = tx.objectStore(STORE_NAME);
         const req = store.add({
@@ -67,6 +90,20 @@
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
       });
+
+      // Automatic FIFO limit pruning
+      try {
+        const all = await this.getAllItems(200);
+        const limit = Math.max(5, Math.min(100, Number(maxLimit) || 30));
+        if (all.length > limit) {
+          const toDelete = all.slice(limit);
+          for (const record of toDelete) {
+            await this.deleteItem(record.id);
+          }
+        }
+      } catch (err) {
+        console.warn("History limit pruning error:", err);
+      }
     }
 
     static async getAllItems(maxLimit = 50) {
@@ -108,34 +145,35 @@
   }
 
   // =========================================================================
-  // Canvas Card Custom Element
+  // Whiteboard Canvas Card Custom Element
   // =========================================================================
-  class CanvasCard extends HTMLElement {
+  class WhiteboardCanvasCard extends HTMLElement {
     constructor() {
       super();
       this.attachShadow({ mode: "open" });
 
       // Configuration state
-      this._config = {
-        title: "Canvas Studio",
-        printer_ip: "",
-        printer_port: 631,
-        print_mode: "ipp", // 'ipp', 'ha_service', 'gateway', 'os_print'
-        ha_print_service: "notify.printer",
-        gateway_url: "",
-        paper_size: "a4",
-        color_mode: "color", // 'color', 'monochrome'
-        canvas_bg: "grid", // 'grid', 'blank', 'dots'
-        confirm_discard: true,
-        height: 520
-      };
+      this._config = { ...DEFAULT_CONFIG };
 
-      // Infinite Canvas State
+      // Unique Client ID for multi-terminal sync
+      this.clientId = "client_" + Math.random().toString(36).slice(2, 9);
+      this._seenEvents = new Set();
+      this._broadcastChannel = null;
+      this._unsubHassSync = null;
+
+      // Virtual Canvas Dimensions (GPU hardware accelerated <= 4096px boundary)
+      this.virtualWidth = 3200;
+      this.virtualHeight = 3200;
+
+      // Infinite Canvas Viewport State
       this.scale = 1.0;
       this.panX = 0;
       this.panY = 0;
       this.isPinching = false;
       this.isPanning = false;
+      this.isPanningCanvas = false;
+      this.panStartX = 0;
+      this.panStartY = 0;
       this.initialDistance = 0;
       this.initialScale = 1.0;
       this.initialMidX = 0;
@@ -144,32 +182,70 @@
       this.initialPanY = 0;
 
       // Tool State
-      this.currentTool = "pen"; // 'pen', 'marker', 'eraser', 'text'
+      this.currentTool = "pen"; // 'pen', 'marker', 'eraser', 'text', 'hand'
       this.currentColor = "#1e293b";
       this.currentSize = 6; // Pen base size
       this.isDrawing = false;
+      this.hasMoved = false; // Tracks if gesture produced actual movement
+      this.startX = 0;
+      this.startY = 0;
       this.lastX = 0;
       this.lastY = 0;
       this.midX = 0;
       this.midY = 0;
+      this._vpRect = null; // Cached viewport rect to prevent layout thrashing
+      this.currentStrokePoints = [];
 
-      // Strokes & Undo/Redo Stack
+      // Per-Device Collaborative Operation Stack & Local Redo Stack
+      this.operations = [];
+      this.redoStack = [];
+      this._baseImageElement = null;
+      this._baseImageDataUrl = null;
       this.historyStack = [];
       this.historyStep = -1;
       this.maxHistory = 30;
 
-      // Text Box Active State
+      // Floating Text Box State
       this.activeTextBox = null;
       this.selectedTextColor = "#1e293b";
-      this.selectedTextSizeLevel = 3; // 1:Small (18px), 2:Medium (26px), 3:Large (36px), 4:XL (52px)
-      this.previewFontSizesCss = { 1: 18, 2: 26, 3: 36, 4: 52 };
+      this.selectedTextSizeLevel = 3;
+      this.previewFontSizesCss = { 1: 18, 2: 24, 3: 32, 4: 44 };
 
       // Bounding box accumulator for strokes [minX, minY, maxX, maxY]
       this.bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+
+      this._initialCentered = false;
+      this._lastFittedScale = null;
+      this._resizeObserver = null;
     }
 
     setConfig(config) {
-      this._config = { ...this._config, ...config };
+      const pSettings = config.printer_settings || {};
+      const cSettings = config.canvas_settings || {};
+
+      const printerIp = (config.printer_ip !== undefined ? config.printer_ip : pSettings.printer_ip) || "";
+      const enablePrinting = (config.enable_printing !== undefined)
+        ? Boolean(config.enable_printing)
+        : (pSettings.enable_printing !== undefined ? Boolean(pSettings.enable_printing) : false);
+
+      this._config = {
+        title: config.title || "Canvas Studio",
+        enable_printing: enablePrinting,
+        printer_ip: String(printerIp).trim(),
+        printer_port: Number(config.printer_port ?? pSettings.printer_port ?? 631),
+        print_mode: config.print_mode ?? pSettings.print_mode ?? "ipp",
+        ha_print_service: config.ha_print_service ?? pSettings.ha_print_service ?? "notify.printer",
+        gateway_url: String(config.gateway_url ?? pSettings.gateway_url ?? "").trim(),
+        canvas_bg: config.canvas_bg ?? cSettings.canvas_bg ?? "grid",
+        height: Number(config.height ?? cSettings.height ?? 560),
+        confirm_discard: (config.confirm_discard !== undefined)
+          ? Boolean(config.confirm_discard)
+          : (cSettings.confirm_discard !== undefined ? Boolean(cSettings.confirm_discard) : true),
+        max_history_items: Number(config.max_history_items ?? cSettings.max_history_items ?? 30),
+        sync_channel: String(config.sync_channel || "canvas_studio").trim(),
+        enable_sync: config.enable_sync !== undefined ? Boolean(config.enable_sync) : true
+      };
+
       if (this._rendered) {
         this._updateConfigBindings();
       }
@@ -177,6 +253,9 @@
 
     set hass(hass) {
       this._hass = hass;
+      if (!this._unsubHassSync && this._rendered) {
+        this.setupHassSync();
+      }
     }
 
     getCardSize() {
@@ -184,18 +263,36 @@
     }
 
     static getConfigElement() {
-      return document.createElement("canvas-card-editor");
+      return document.createElement("whiteboard-canvas-card-editor");
     }
 
     static getStubConfig() {
       return {
         title: "Canvas Studio",
+        enable_printing: false,
         printer_ip: "",
-        paper_size: "a4",
+        printer_port: 631,
+        print_mode: "ipp",
         canvas_bg: "grid",
+        height: 560,
         confirm_discard: true,
-        height: 520
+        max_history_items: 30,
+        sync_channel: "canvas_studio",
+        enable_sync: true
       };
+    }
+
+    isPrintingEnabled() {
+      return Boolean(this._config.enable_printing);
+    }
+
+    hasStrokes() {
+      return (
+        this.bounds &&
+        this.bounds.minX !== Infinity &&
+        this.bounds.maxX !== -Infinity &&
+        (this.bounds.maxX > this.bounds.minX || this.bounds.maxY > this.bounds.minY)
+      );
     }
 
     connectedCallback() {
@@ -203,12 +300,37 @@
         this.render();
         this._rendered = true;
       }
+      this.initSyncEngine();
+      if (this._hass) {
+        this.setupHassSync();
+      }
+    }
+
+    disconnectedCallback() {
+      if (this._resizeObserver) {
+        this._resizeObserver.disconnect();
+        this._resizeObserver = null;
+      }
+      if (this._broadcastChannel) {
+        this._broadcastChannel.close();
+        this._broadcastChannel = null;
+      }
+      if (this._unsubHassSync) {
+        if (typeof this._unsubHassSync === "function") {
+          this._unsubHassSync();
+        } else if (typeof this._unsubHassSync.then === "function") {
+          this._unsubHassSync.then((unsub) => { if (typeof unsub === "function") unsub(); });
+        }
+        this._unsubHassSync = null;
+      }
     }
 
     // =========================================================================
     // UI Template & Styles
     // =========================================================================
     render() {
+      const isPrint = this.isPrintingEnabled();
+
       this.shadowRoot.innerHTML = `
         <style>
           :host {
@@ -435,13 +557,13 @@
             cursor: pointer;
           }
 
-          /* Canvas Viewport */
+          /* Boundless Canvas Viewport */
           .viewport {
             position: relative;
             width: 100%;
-            height: ${this._config.height || 520}px;
+            height: ${this._config.height || 560}px;
             overflow: hidden;
-            background: #f8fafc;
+            background-color: #ffffff;
             touch-action: none;
             user-select: none;
             cursor: crosshair;
@@ -451,48 +573,66 @@
             position: absolute;
             top: 0;
             left: 0;
+            width: ${this.virtualWidth}px;
+            height: ${this.virtualHeight}px;
             transform-origin: 0 0;
             will-change: transform;
+            pointer-events: auto;
           }
 
-          canvas {
+          #drawCanvas {
             position: absolute;
             top: 0;
             left: 0;
             display: block;
-          }
-
-          #bgCanvas {
-            z-index: 1;
-          }
-
-          #drawCanvas {
+            width: ${this.virtualWidth}px;
+            height: ${this.virtualHeight}px;
             z-index: 2;
           }
 
-          /* Floating Reset Zoom Pill */
-          .reset-zoom-pill {
+          /* Floating Viewport Control Pod (Bottom-Right) */
+          .viewport-control-pod {
             position: absolute;
             bottom: 16px;
             right: 16px;
             z-index: 20;
-            background: rgba(15, 23, 42, 0.88);
-            backdrop-filter: blur(8px);
-            color: #ffffff;
-            padding: 6px 12px;
-            border-radius: 20px;
-            font-size: 12px;
-            font-weight: 600;
-            display: none;
+            display: flex;
             align-items: center;
-            gap: 6px;
-            cursor: pointer;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
-            transition: all 0.2s;
+            background: rgba(15, 23, 42, 0.92);
+            backdrop-filter: blur(8px);
+            border-radius: 24px;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            padding: 2px 4px;
+            gap: 2px;
           }
-          .reset-zoom-pill:hover {
-            background: #0f172a;
-            transform: scale(1.05);
+
+          .pod-btn {
+            background: transparent;
+            border: none;
+            color: #ffffff;
+            padding: 6px 10px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            border-radius: 20px;
+            transition: all 0.15s ease;
+            user-select: none;
+          }
+          .pod-btn:hover {
+            background: rgba(255, 255, 255, 0.18);
+          }
+          .pod-btn:active {
+            transform: scale(0.95);
+          }
+
+          .pod-center-btn {
+            padding: 6px 12px;
+            background: rgba(255, 255, 255, 0.08);
           }
 
           /* Toast Notification */
@@ -521,7 +661,7 @@
             opacity: 1;
           }
 
-          /* Modal & Drawer */
+          /* Modals */
           .modal-overlay {
             position: absolute;
             top: 0;
@@ -541,9 +681,9 @@
           .modal-card {
             background: var(--surface-bg);
             border-radius: 14px;
-            max-width: 600px;
+            max-width: 620px;
             width: 100%;
-            max-height: 90%;
+            max-height: 94%;
             display: flex;
             flex-direction: column;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
@@ -568,6 +708,9 @@
             margin: 0;
             font-size: 16px;
             font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 8px;
           }
 
           .modal-body {
@@ -662,103 +805,284 @@
           .btn-mini.danger { color: #ef4444; }
 
           /* ========================================================================= */
-          /* Inline Draggable Text Box Styles */
+          /* Print Framing Modal Styles */
           /* ========================================================================= */
-          .canvas-text-box {
-            position: absolute;
-            z-index: 30;
+          .print-framing-card {
+            max-width: 660px;
+          }
+
+          .print-settings-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+            padding: 10px 14px;
+            background: rgba(0, 0, 0, 0.03);
+            border-radius: 10px;
+            border: 1px solid var(--surface-border);
+          }
+
+          .setting-item {
             display: flex;
             flex-direction: column;
             gap: 4px;
+          }
+
+          .setting-item label {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-secondary);
+          }
+
+          .print-select {
+            padding: 6px 10px;
+            border-radius: 6px;
+            border: 1px solid var(--surface-border);
+            background: var(--surface-bg);
+            color: var(--text-primary);
+            font-size: 13px;
+            font-weight: 600;
+            font-family: inherit;
+            cursor: pointer;
+            outline: none;
+          }
+          .print-select:hover {
+            border-color: var(--primary-accent);
+          }
+
+          .orientation-btn-group {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            background: var(--surface-border);
+            padding: 2px;
+            border-radius: 6px;
+          }
+
+          .orientation-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 5px 10px;
+            border: none;
+            background: transparent;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+          }
+
+          .orientation-btn.active {
+            background: var(--surface-bg);
+            color: var(--primary-accent);
+            box-shadow: 0 1px 4px rgba(0,0,0,0.12);
+          }
+
+          /* Interactive Framing Stage */
+          .framing-stage-container {
+            width: 100%;
+            height: 330px;
+            position: relative;
+            background: #0f172a;
+            border-radius: 10px;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            user-select: none;
+            touch-action: none;
+          }
+
+          .framing-stage {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            cursor: grab;
+            touch-action: none;
+          }
+          .framing-stage:active {
+            cursor: grabbing;
+          }
+
+          #framingPreviewCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: block;
+          }
+
+          /* Fixed Paper Framing Box with outer vignette mask */
+          .framing-box {
+            position: absolute;
+            border: 2.5px solid #3b82f6;
+            box-shadow: 0 0 0 9999px rgba(15, 23, 42, 0.65), 0 0 16px rgba(59, 130, 246, 0.4);
+            pointer-events: none;
+            box-sizing: border-box;
+            transition: width 0.18s ease, height 0.18s ease, left 0.18s ease, top 0.18s ease;
+          }
+
+          .frame-rule {
+            position: absolute;
+            background: rgba(59, 130, 246, 0.22);
+            pointer-events: none;
+          }
+          .rule-v1 { top: 0; bottom: 0; left: 33.33%; width: 1px; }
+          .rule-v2 { top: 0; bottom: 0; left: 66.66%; width: 1px; }
+          .rule-h1 { left: 0; right: 0; top: 33.33%; height: 1px; }
+          .rule-h2 { left: 0; right: 0; top: 66.66%; height: 1px; }
+
+          .frame-badge {
+            position: absolute;
+            top: 6px;
+            left: 6px;
+            background: rgba(15, 23, 42, 0.88);
+            color: #ffffff;
+            font-size: 10px;
+            font-weight: 700;
+            padding: 3px 8px;
+            border-radius: 4px;
+            pointer-events: none;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+          }
+
+          .framing-tools {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 10px;
+          }
+
+          .btn-framing-tool {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 5px 10px;
+            font-size: 12px;
+            font-weight: 600;
+            border: 1px solid var(--surface-border);
+            background: var(--surface-bg);
+            color: var(--text-primary);
+            border-radius: 6px;
+            cursor: pointer;
+          }
+          .btn-framing-tool:hover {
+            background: var(--btn-hover);
+          }
+
+          .framing-hint {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-left: auto;
+          }
+
+          /* ========================================================================= */
+          /* Inline Draggable Floating Text Box */
+          /* ========================================================================= */
+          .canvas-text-box {
+            position: absolute;
+            z-index: 45;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
             padding: 0;
-            min-width: 250px;
-            max-width: 90%;
+            width: min(380px, calc(100% - 32px));
             touch-action: none;
             user-select: none;
             -webkit-user-select: none;
+            filter: drop-shadow(0 12px 28px rgba(0, 0, 0, 0.28));
           }
 
           .text-drag-bar {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            padding: 4px 8px;
-            background: rgba(15, 23, 42, 0.94);
+            padding: 6px 12px;
+            background: rgba(15, 23, 42, 0.96);
             backdrop-filter: blur(8px);
-            border-radius: 8px;
+            border-radius: 10px;
             border: 1px solid rgba(255, 255, 255, 0.15);
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
             cursor: grab;
             touch-action: none;
           }
           .text-drag-bar:active { cursor: grabbing; }
 
           .drag-title {
-            font-size: 11px;
+            font-size: 12px;
             font-weight: 600;
             color: #94a3b8;
             display: flex;
             align-items: center;
-            gap: 5px;
+            gap: 6px;
             pointer-events: none;
           }
 
           .text-box-quick-actions {
             display: flex;
             align-items: center;
-            gap: 6px;
+            gap: 8px;
           }
 
           .btn-text-done {
             background: linear-gradient(135deg, #16a34a, #22c55e);
             color: #ffffff;
             border: none;
-            padding: 4px 10px;
+            padding: 6px 14px;
             border-radius: 6px;
-            font-size: 12px;
+            font-size: 13px;
             font-weight: 700;
             cursor: pointer;
             display: flex;
             align-items: center;
-            gap: 4px;
-            box-shadow: 0 2px 6px rgba(22, 163, 74, 0.4);
+            gap: 5px;
+            box-shadow: 0 2px 8px rgba(22, 163, 74, 0.4);
+            user-select: none;
           }
           .btn-text-done:active { transform: scale(0.96); }
 
           .btn-text-cancel {
-            background: rgba(255, 255, 255, 0.12);
-            color: #cbd5e1;
+            background: rgba(255, 255, 255, 0.14);
+            color: #e2e8f0;
             border: none;
-            padding: 4px 8px;
+            padding: 6px 12px;
             border-radius: 6px;
-            font-size: 12px;
-            font-weight: 600;
+            font-size: 13px;
+            font-weight: 700;
             cursor: pointer;
+            user-select: none;
           }
-          .btn-text-cancel:hover { color: #ef4444; }
+          .btn-text-cancel:hover { color: #ef4444; background: rgba(239, 68, 68, 0.2); }
 
           #inlineTextInput {
             width: 100%;
-            min-height: 44px;
+            min-height: 52px;
             outline: none;
-            background: rgba(255, 255, 255, 0.88) !important;
-            backdrop-filter: blur(2px);
-            border: 2px dashed #3b82f6 !important;
-            border-radius: 6px;
-            box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
-            padding: 6px 8px;
+            background: rgba(255, 255, 255, 0.96) !important;
+            backdrop-filter: blur(4px);
+            border: 2px solid #3b82f6 !important;
+            border-radius: 8px;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
+            padding: 8px 12px;
             font-family: inherit;
             font-weight: 700;
             resize: none;
             overflow: hidden;
-            line-height: 1.25;
+            line-height: 1.3;
             box-sizing: border-box;
-            caret-color: #3b82f6;
+            caret-color: #2563eb;
             user-select: text;
           }
           #inlineTextInput:focus {
-            background: rgba(255, 255, 255, 0.98) !important;
-            border-color: #2563eb !important;
+            background: #ffffff !important;
+            border-color: #1d4ed8 !important;
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.25);
           }
 
           .text-box-controls {
@@ -767,12 +1091,11 @@
             justify-content: space-between;
             gap: 8px;
             flex-wrap: wrap;
-            background: rgba(15, 23, 42, 0.94);
+            background: rgba(15, 23, 42, 0.96);
             backdrop-filter: blur(8px);
-            border-radius: 8px;
+            border-radius: 10px;
             border: 1px solid rgba(255, 255, 255, 0.15);
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
-            padding: 5px 8px;
+            padding: 6px 12px;
           }
 
           .inline-color-swatches {
@@ -822,14 +1145,14 @@
                 <ha-icon icon="mdi:draw"></ha-icon>
                 <span id="titleText">${this._config.title || "Canvas Studio"}</span>
               </h2>
-              <div class="printer-pill ${this._config.printer_ip ? "" : "offline"}" id="printerBadge">
+              <div class="printer-pill ${this._config.printer_ip ? "" : "offline"}" id="printerBadge" style="display: ${isPrint ? "flex" : "none"};">
                 <ha-icon icon="mdi:printer"></ha-icon>
-                <span id="printerStatusText">${this._config.printer_ip ? this._config.printer_ip : "No Printer"}</span>
+                <span id="printerStatusText">${this._config.printer_ip ? this._config.printer_ip : "OS Print"}</span>
               </div>
             </div>
 
             <div class="primary-actions">
-              <button class="btn-action btn-save-new" id="btnSaveNew" title="Save drawing and create fresh canvas">
+              <button class="btn-action btn-save-new" id="btnSaveNew" title="Save drawing to history and create fresh canvas">
                 <ha-icon icon="mdi:content-save-plus-outline"></ha-icon>
                 <span>Save + New</span>
               </button>
@@ -837,20 +1160,19 @@
                 <ha-icon icon="mdi:close-circle-outline"></ha-icon>
                 <span>Discard + New</span>
               </button>
-              <button class="btn-action btn-print-new" id="btnPrintNew" title="Print drawing, save to history, and create fresh canvas">
+              <button class="btn-action btn-print-new" id="btnPrintNew" title="Frame drawing, print at 300 DPI, archive, and reset" style="display: ${isPrint ? "inline-flex" : "none"};">
                 <ha-icon icon="mdi:printer-pos-outline"></ha-icon>
                 <span>Print + New</span>
               </button>
-              <button class="btn-action btn-history" id="btnHistory" title="View drawing archive & reprint">
+              <button class="btn-action btn-history" id="btnHistory" title="View drawing history archive">
                 <ha-icon icon="mdi:history"></ha-icon>
                 <span>History</span>
               </button>
             </div>
           </div>
 
-          <!-- Drawing Toolbox -->
+          <!-- Drawing Toolbox (Always Infinite Canvas) -->
           <div class="toolbar">
-            <!-- Tools -->
             <div class="tool-group">
               <button class="tool-btn active" data-tool="pen" title="Pencil / Smooth Pen">
                 <ha-icon icon="mdi:lead-pencil"></ha-icon>
@@ -863,6 +1185,9 @@
               </button>
               <button class="tool-btn" data-tool="text" title="Draggable Text Box">
                 <ha-icon icon="mdi:format-text"></ha-icon>
+              </button>
+              <button class="tool-btn" data-tool="hand" title="Hand / Pan Viewport (Single-finger drag)">
+                <ha-icon icon="mdi:hand-back-right-outline"></ha-icon>
               </button>
             </div>
 
@@ -915,17 +1240,24 @@
             </div>
           </div>
 
-          <!-- Viewport with Infinite Canvas -->
+          <!-- Viewport with Boundless Canvas -->
           <div class="viewport" id="viewport">
             <div class="canvas-sheet" id="sheetContainer">
-              <canvas id="bgCanvas"></canvas>
               <canvas id="drawCanvas"></canvas>
             </div>
 
-            <!-- Floating Reset Zoom Pill -->
-            <div class="reset-zoom-pill" id="resetZoomBtn" title="Center drawing and reset zoom to 100%">
-              <ha-icon icon="mdi:crosshairs-gps"></ha-icon>
-              <span id="resetZoomText">100%</span>
+            <!-- Floating Viewport Control Pod (Bottom-Right) -->
+            <div class="viewport-control-pod" id="controlPod">
+              <button class="pod-btn" id="btnZoomOut" title="Zoom Out (-20%)">
+                <ha-icon icon="mdi:minus"></ha-icon>
+              </button>
+              <button class="pod-btn pod-center-btn" id="btnZoomReset" title="Fit to Content / Reset (100%)">
+                <ha-icon icon="mdi:crosshairs-gps"></ha-icon>
+                <span id="zoomPercentText">100%</span>
+              </button>
+              <button class="pod-btn" id="btnZoomIn" title="Zoom In (+20%)">
+                <ha-icon icon="mdi:plus"></ha-icon>
+              </button>
             </div>
 
             <!-- Toast Notification -->
@@ -935,19 +1267,20 @@
             </div>
           </div>
 
-          <!-- History Modal -->
+          <!-- History Archive Modal -->
           <div class="modal-overlay" id="historyModal">
             <div class="modal-card">
               <div class="modal-header">
-                <h3 class="modal-title">Drawings History</h3>
+                <h3 class="modal-title" id="historyModalTitle">
+                  <ha-icon icon="mdi:history" style="color: var(--primary-accent);"></ha-icon>
+                  <span>Drawings History</span>
+                </h3>
                 <button class="tool-btn" id="btnCloseHistory" title="Close">
                   <ha-icon icon="mdi:close"></ha-icon>
                 </button>
               </div>
               <div class="modal-body">
-                <div class="history-grid" id="historyGrid">
-                  <!-- Dynamically populated -->
-                </div>
+                <div class="history-grid" id="historyGrid"></div>
               </div>
               <div class="modal-footer">
                 <button class="btn-action btn-discard-new" id="btnClearHistory">
@@ -958,44 +1291,91 @@
             </div>
           </div>
 
-          <!-- Print Preview & Setting Modal -->
+          <!-- Interactive Print Framing Modal -->
           <div class="modal-overlay" id="printModal">
-            <div class="modal-card" style="max-width: 440px;">
+            <div class="modal-card print-framing-card">
               <div class="modal-header">
-                <h3 class="modal-title">Print Settings</h3>
+                <h3 class="modal-title">
+                  <ha-icon icon="mdi:crop-rotate" style="color: var(--primary-accent);"></ha-icon>
+                  Frame & Print Drawing
+                </h3>
                 <button class="tool-btn" id="btnClosePrint" title="Close">
                   <ha-icon icon="mdi:close"></ha-icon>
                 </button>
               </div>
               <div class="modal-body">
-                <div style="display:flex; justify-content:center; background:#ffffff; padding:12px; border-radius:8px; border:1px solid var(--surface-border); margin-bottom:12px;">
-                  <img id="printPreviewImg" style="max-height: 180px; max-width: 100%; object-fit: contain;" />
-                </div>
-                <div style="display: flex; flex-direction: column; gap: 10px; font-size: 13px;">
-                  <label>
-                    <b>Paper Size:</b>
-                    <select id="selectPaperSize" style="width: 100%; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--surface-border); margin-top: 4px;">
+                <!-- Settings Toolbar -->
+                <div class="print-settings-bar">
+                  <div class="setting-item">
+                    <label>Paper Size</label>
+                    <select id="selectPaperSize" class="print-select">
                       <option value="a4" selected>A4 (210 x 297 mm)</option>
+                      <option value="a5">A5 (148 x 210 mm)</option>
                       <option value="a3">A3 (297 x 420 mm)</option>
                       <option value="letter">Letter (8.5 x 11 in)</option>
                       <option value="thermal80">Thermal Receipt (80 mm)</option>
-                      <option value="fit">Fit Content (1:1)</option>
                     </select>
-                  </label>
-                  <label>
-                    <b>Color Mode:</b>
-                    <select id="selectColorMode" style="width: 100%; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--surface-border); margin-top: 4px;">
+                  </div>
+                  <div class="setting-item">
+                    <label>Orientation</label>
+                    <div class="orientation-btn-group">
+                      <button type="button" class="orientation-btn active" id="btnOrientPortrait">
+                        <ha-icon icon="mdi:crop-portrait"></ha-icon>
+                        <span>Portrait</span>
+                      </button>
+                      <button type="button" class="orientation-btn" id="btnOrientLandscape">
+                        <ha-icon icon="mdi:crop-landscape"></ha-icon>
+                        <span>Landscape</span>
+                      </button>
+                    </div>
+                  </div>
+                  <div class="setting-item">
+                    <label>Color Mode</label>
+                    <select id="selectColorMode" class="print-select">
                       <option value="color" selected>Full Color</option>
-                      <option value="monochrome">Monochrome / Grayscale</option>
+                      <option value="monochrome">Monochrome</option>
                     </select>
-                  </label>
+                  </div>
+                </div>
+
+                <!-- Interactive Framing Stage -->
+                <div class="framing-stage-container" id="framingStageContainer">
+                  <div class="framing-stage" id="framingStage">
+                    <canvas id="framingPreviewCanvas"></canvas>
+                    <div class="framing-box" id="framingBox">
+                      <div class="frame-rule rule-v1"></div>
+                      <div class="frame-rule rule-v2"></div>
+                      <div class="frame-rule rule-h1"></div>
+                      <div class="frame-rule rule-h2"></div>
+                      <div class="frame-badge" id="frameDimensionsBadge">A4 Portrait</div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Quick framing controls -->
+                <div class="framing-tools">
+                  <button type="button" class="btn-framing-tool" id="btnFrameFitAll" title="Scale & center drawing to fit inside paper">
+                    <ha-icon icon="mdi:fit-to-page-outline"></ha-icon>
+                    <span>Fit Content</span>
+                  </button>
+                  <button type="button" class="btn-framing-tool" id="btnFrameZoomOut" title="Zoom Out Drawing">
+                    <ha-icon icon="mdi:minus"></ha-icon>
+                  </button>
+                  <button type="button" class="btn-framing-tool" id="btnFrameZoomIn" title="Zoom In Drawing">
+                    <ha-icon icon="mdi:plus"></ha-icon>
+                  </button>
+                  <button type="button" class="btn-framing-tool" id="btnFrameReset" title="Reset 1:1 View">
+                    <ha-icon icon="mdi:restore"></ha-icon>
+                    <span>Reset View</span>
+                  </button>
+                  <span class="framing-hint">Drag or scroll canvas to fit inside paper frame</span>
                 </div>
               </div>
               <div class="modal-footer">
                 <button class="btn-action btn-history" id="btnCancelPrint">Cancel</button>
                 <button class="btn-action btn-print-new" id="btnConfirmPrint">
                   <ha-icon icon="mdi:printer"></ha-icon>
-                  <span>Print Now</span>
+                  <span>Print Framed Area</span>
                 </button>
               </div>
             </div>
@@ -1008,132 +1388,683 @@
     }
 
     // =========================================================================
-    // Infinite Canvas Engine Implementation
+    // Canvas Engine Implementation
     // =========================================================================
     initCanvasEngine() {
       const root = this.shadowRoot;
       this.viewport = root.getElementById("viewport");
       this.sheet = root.getElementById("sheetContainer");
-      this.bgCanvas = root.getElementById("bgCanvas");
       this.drawCanvas = root.getElementById("drawCanvas");
-      this.bgCtx = this.bgCanvas.getContext("2d");
-      this.drawCtx = this.drawCanvas.getContext("2d", { willReadFrequently: true });
 
-      // Internal virtual buffer size (300 DPI A4 baseline: 2480 x 3508)
-      this.virtualWidth = 2480;
-      this.virtualHeight = 3508;
-
-      this.bgCanvas.width = this.virtualWidth;
-      this.bgCanvas.height = this.virtualHeight;
       this.drawCanvas.width = this.virtualWidth;
       this.drawCanvas.height = this.virtualHeight;
+      this.drawCtx = this.drawCanvas.getContext("2d", { willReadFrequently: true });
 
-      this.renderBackground();
-      this.fitViewportToCenter();
+      // Save initial clean state
       this.saveState();
 
-      // Bind canvas interaction events
+      // Bind drawing and pan/zoom interactions
       this.bindCanvasEvents();
 
-      // Safari Gesture blocking
+      // ResizeObserver for automatic centering upon layout ready
+      if (window.ResizeObserver) {
+        this._resizeObserver = new ResizeObserver((entries) => {
+          for (const entry of entries) {
+            if (entry.contentRect.width > 50 && entry.contentRect.height > 50) {
+              if (!this._initialCentered) {
+                this._initialCentered = true;
+                this.fitViewportToCenter();
+              } else {
+                this.updateViewportBackground();
+              }
+            }
+          }
+        });
+        this._resizeObserver.observe(this.viewport);
+      }
+
+      // Initial center fallback
+      requestAnimationFrame(() => {
+        if (!this._initialCentered) {
+          this._initialCentered = true;
+          this.fitViewportToCenter();
+        }
+      });
+
+      // Prevent default gestures on touch devices
       this.viewport.addEventListener("gesturestart", (e) => e.preventDefault());
       this.viewport.addEventListener("gesturechange", (e) => e.preventDefault());
       this.viewport.addEventListener("gestureend", (e) => e.preventDefault());
     }
 
-    renderBackground() {
-      const ctx = this.bgCtx;
-      const w = this.virtualWidth;
-      const h = this.virtualHeight;
-      ctx.clearRect(0, 0, w, h);
+    // =========================================================================
+    // Multi-Terminal Real-Time Sync Engine
+    // =========================================================================
+    initSyncEngine() {
+      const channel = this._config.sync_channel || "canvas_studio";
+      if (this._broadcastChannel) {
+        this._broadcastChannel.close();
+      }
+      try {
+        this._broadcastChannel = new BroadcastChannel("canvas_card_" + channel);
+        this._broadcastChannel.onmessage = (ev) => this.handleRemoteEvent(ev.data);
+      } catch (err) {
+        console.warn("BroadcastChannel not supported in this environment:", err);
+      }
+    }
 
-      // Clean white background
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, w, h);
+    async setupHassSync() {
+      if (!this._hass || !this._hass.connection || this._unsubHassSync) return;
+      try {
+        this._unsubHassSync = await this._hass.connection.subscribeEvents((ev) => {
+          this.handleRemoteEvent(ev.data);
+        }, "canvas_card_sync");
 
-      const style = this._config.canvas_bg || "grid";
-      if (style === "grid") {
-        ctx.strokeStyle = "rgba(59, 130, 246, 0.22)";
-        ctx.lineWidth = 4;
-        const step = Math.floor(w / 35);
-        ctx.beginPath();
-        for (let x = 0; x <= w; x += step) {
-          ctx.moveTo(x, 0); ctx.lineTo(x, h);
+        // Ask any existing active device for initial drawing state
+        setTimeout(() => {
+          this.broadcastSyncEvent({
+            action: "request_canvas",
+            clientId: this.clientId
+          });
+        }, 400);
+      } catch (err) {
+        console.warn("HA WebSocket sync subscription warning:", err);
+      }
+    }
+
+    broadcastSyncEvent(payload) {
+      if (!this._config.enable_sync) return;
+      payload.clientId = this.clientId;
+      payload.channel = this._config.sync_channel || "canvas_studio";
+      payload.timestamp = Date.now();
+      payload.eventId = `${this.clientId}_${payload.timestamp}_${Math.random().toString(36).slice(2, 7)}`;
+
+      // 1. BroadcastChannel (same browser / tabs - 0ms)
+      if (this._broadcastChannel) {
+        try {
+          this._broadcastChannel.postMessage(payload);
+        } catch (e) {}
+      }
+
+      // 2. Home Assistant WebSocket Event Bus (cross-device)
+      if (this._hass && this._hass.connection) {
+        this._hass.connection.sendMessagePromise({
+          type: "fire_event",
+          event_type: "canvas_card_sync",
+          event_data: payload
+        }).catch((err) => {
+          // Non-critical network warning
+        });
+      }
+    }
+
+    buildCanvasPatchPayload(actionName, extra = {}) {
+      const accurate = this.computeAccurateBounds();
+      if (accurate) {
+        this.bounds = accurate;
+      } else {
+        this.bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+      }
+
+      if (!this.hasStrokes()) {
+        return {
+          action: actionName,
+          isEmpty: true,
+          bounds: { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity },
+          ...extra
+        };
+      }
+
+      const bx = Math.max(0, Math.floor(this.bounds.minX) - 4);
+      const by = Math.max(0, Math.floor(this.bounds.minY) - 4);
+      const bw = Math.min(this.virtualWidth - bx, Math.ceil(this.bounds.maxX - bx) + 8);
+      const bh = Math.min(this.virtualHeight - by, Math.ceil(this.bounds.maxY - by) + 8);
+
+      const patchCanvas = document.createElement("canvas");
+      patchCanvas.width = Math.max(1, bw);
+      patchCanvas.height = Math.max(1, bh);
+      const pCtx = patchCanvas.getContext("2d");
+      pCtx.drawImage(this.drawCanvas, bx, by, bw, bh, 0, 0, bw, bh);
+
+      return {
+        action: actionName,
+        isEmpty: false,
+        bounds: { ...this.bounds },
+        patchX: bx,
+        patchY: by,
+        patchW: bw,
+        patchH: bh,
+        patch: patchCanvas.toDataURL("image/png"),
+        ...extra
+      };
+    }
+
+    applyRemoteStatePatch(data, autoFit = false) {
+      if (data.isEmpty) {
+        if (data.action === "undo") {
+          this.historyStep = 0;
         }
-        for (let y = 0; y <= h; y += step) {
-          ctx.moveTo(0, y); ctx.lineTo(w, y);
+        this.drawCtx.clearRect(0, 0, this.virtualWidth, this.virtualHeight);
+        this.bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+        if (this.historyStack[this.historyStep]) {
+          const snap = this.historyStack[this.historyStep];
+          snap.getContext("2d").clearRect(0, 0, this.virtualWidth, this.virtualHeight);
+          snap.bounds = { ...this.bounds };
         }
-        ctx.stroke();
-      } else if (style === "dots") {
-        ctx.fillStyle = "rgba(100, 116, 139, 0.35)";
-        const step = Math.floor(w / 35);
-        for (let x = step; x < w; x += step) {
-          for (let y = step; y < h; y += step) {
-            ctx.beginPath();
-            ctx.arc(x, y, 4, 0, Math.PI * 2);
-            ctx.fill();
+        this.notifyHistoryButtons();
+        return;
+      }
+
+      let steppedExistingFrame = false;
+      if (data.action === "undo") {
+        if (this.historyStep > 1) {
+          this.historyStep--;
+          steppedExistingFrame = true;
+          this.drawCtx.clearRect(0, 0, this.virtualWidth, this.virtualHeight);
+          this.drawCtx.drawImage(this.historyStack[this.historyStep], 0, 0);
+        } else if (this.historyStep === 1) {
+          steppedExistingFrame = true;
+        }
+      } else if (data.action === "redo") {
+        if (this.historyStep < this.historyStack.length - 1) {
+          this.historyStep++;
+          steppedExistingFrame = true;
+          this.drawCtx.clearRect(0, 0, this.virtualWidth, this.virtualHeight);
+          this.drawCtx.drawImage(this.historyStack[this.historyStep], 0, 0);
+        }
+      }
+
+      const imgSrc = data.patch || data.image;
+      if (!imgSrc) {
+        if (data.bounds) this.bounds = { ...data.bounds };
+        this.notifyHistoryButtons();
+        return;
+      }
+
+      const img = new Image();
+      img.onload = () => {
+        this.drawCtx.clearRect(0, 0, this.virtualWidth, this.virtualHeight);
+        if (data.patch) {
+          this.drawCtx.drawImage(
+            img,
+            data.patchX || 0,
+            data.patchY || 0,
+            data.patchW || img.width,
+            data.patchH || img.height
+          );
+        } else {
+          this.drawCtx.drawImage(img, 0, 0, this.virtualWidth, this.virtualHeight);
+        }
+
+        if (data.bounds && data.bounds.minX !== Infinity) {
+          this.bounds = { ...data.bounds };
+        } else {
+          const acc = this.computeAccurateBounds();
+          this.bounds = acc || { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+        }
+
+        if (!steppedExistingFrame || this.historyStep <= 0 || !this.historyStack[this.historyStep]) {
+          this.saveState();
+        } else {
+          const snap = this.historyStack[this.historyStep];
+          const sCtx = snap.getContext("2d");
+          sCtx.clearRect(0, 0, this.virtualWidth, this.virtualHeight);
+          sCtx.drawImage(this.drawCanvas, 0, 0);
+          snap.bounds = { ...this.bounds };
+          this.notifyHistoryButtons();
+        }
+
+        if (autoFit) {
+          this.fitViewportToCenter();
+        }
+      };
+      img.src = imgSrc;
+    }
+
+    handleRemoteEvent(data) {
+      if (!data || data.clientId === this.clientId) return;
+      if (data.channel !== (this._config.sync_channel || "canvas_studio")) return;
+
+      const eventKey = data.eventId || `${data.clientId}_${data.action}_${data.timestamp}`;
+      if (this._seenEvents && this._seenEvents.has(eventKey)) return;
+      if (!this._seenEvents) this._seenEvents = new Set();
+      this._seenEvents.add(eventKey);
+      if (this._seenEvents.size > 200) {
+        const oldest = Array.from(this._seenEvents).slice(0, 50);
+        oldest.forEach((k) => this._seenEvents.delete(k));
+      }
+
+      if (data.action === "stroke") {
+        const op = {
+          opId: data.opId || `op_${data.clientId}_${data.timestamp}`,
+          ownerId: data.ownerId || data.clientId,
+          type: "stroke",
+          tool: data.tool,
+          color: data.color,
+          size: data.size,
+          points: data.points
+        };
+        if (!this.operations.some((item) => item.opId === op.opId)) {
+          this.operations.push(op);
+          this.renderOperationToContext(this.drawCtx, op, true);
+          this.notifyHistoryButtons();
+        }
+      } else if (data.action === "text") {
+        const op = {
+          opId: data.opId || `op_${data.clientId}_${data.timestamp}`,
+          ownerId: data.ownerId || data.clientId,
+          type: "text",
+          text: data.text,
+          x: data.x,
+          y: data.y,
+          sizeLevel: data.sizeLevel,
+          fontSizeVirtual: data.fontSizeVirtual,
+          color: data.color
+        };
+        if (!this.operations.some((item) => item.opId === op.opId)) {
+          this.operations.push(op);
+          this.renderOperationToContext(this.drawCtx, op, true);
+          this.notifyHistoryButtons();
+        }
+      } else if (data.action === "undo_op") {
+        const idx = this.operations.findIndex((item) => item.opId === data.targetOpId);
+        if (idx !== -1) {
+          this.operations.splice(idx, 1);
+          this.redrawAllOperations();
+        }
+      } else if (data.action === "redo_op") {
+        if (data.op && !this.operations.some((item) => item.opId === data.op.opId)) {
+          this.operations.push(data.op);
+          this.redrawAllOperations();
+        }
+      } else if (data.action === "clear") {
+        this.operations = [];
+        this.redoStack = [];
+        this._baseImageElement = null;
+        this._baseImageDataUrl = null;
+        this.drawCtx.clearRect(0, 0, this.virtualWidth, this.virtualHeight);
+        this.bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+        this.notifyHistoryButtons();
+        this.showToast("Canvas reset by remote user");
+      } else if (data.action === "undo" || data.action === "redo" || data.action === "sync_state") {
+        this.applyRemoteStatePatch(data, false);
+      } else if (data.action === "request_canvas") {
+        if (this.operations.length > 0 || this._baseImageDataUrl || this.hasStrokes()) {
+          this.broadcastSyncEvent({
+            action: "sync_ops",
+            targetClientId: data.clientId,
+            operations: this.operations,
+            baseImage: this._baseImageDataUrl || null
+          });
+        }
+      } else if (data.action === "sync_ops") {
+        if (data.targetClientId === this.clientId) {
+          this.operations = Array.isArray(data.operations) ? [...data.operations] : [];
+          if (data.baseImage) {
+            this.loadDrawingFromDataUrl(data.baseImage, null, true);
+          } else {
+            this.redrawAllOperations();
+            this.fitViewportToCenter();
           }
+          this.showToast("Canvas synchronized with active session");
+        }
+      } else if (data.action === "sync_canvas") {
+        if (!data.targetClientId || data.targetClientId === this.clientId) {
+          if (data.image) {
+            this.operations = [];
+            this.redoStack = [];
+            this.loadDrawingFromDataUrl(data.image, data.bounds);
+          } else {
+            this.applyRemoteStatePatch(data, true);
+          }
+          this.showToast("Canvas synchronized with active session");
         }
       }
     }
 
+    renderOperationToContext(ctx, op, updateBoundsFlag = true) {
+      if (!op) return;
+      if (op.type === "stroke") {
+        if (!op.points || op.points.length < 2) return;
+        ctx.save();
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+
+        let lineWidth = op.size || 6;
+        if (op.tool === "eraser") {
+          ctx.globalCompositeOperation = "destination-out";
+          ctx.globalAlpha = 1.0;
+          lineWidth *= 3.0;
+        } else if (op.tool === "marker") {
+          ctx.globalCompositeOperation = "source-over";
+          ctx.globalAlpha = 0.38;
+          ctx.strokeStyle = op.color || "#1e293b";
+          ctx.fillStyle = op.color || "#1e293b";
+          lineWidth *= 2.5;
+        } else {
+          ctx.globalCompositeOperation = "source-over";
+          ctx.globalAlpha = 1.0;
+          ctx.strokeStyle = op.color || "#1e293b";
+          ctx.fillStyle = op.color || "#1e293b";
+        }
+        const finalWidth = Math.max(2, lineWidth);
+        ctx.lineWidth = finalWidth;
+        const radius = finalWidth / 2;
+
+        const pts = op.points;
+        if (pts.length === 2) {
+          ctx.beginPath();
+          ctx.arc(pts[0], pts[1], radius, 0, Math.PI * 2);
+          ctx.fill();
+          if (updateBoundsFlag && op.tool !== "eraser") {
+            this.updateBounds(pts[0], pts[1], radius);
+          }
+        } else {
+          let lastX = pts[0];
+          let lastY = pts[1];
+          let midX = pts[0];
+          let midY = pts[1];
+          if (updateBoundsFlag && op.tool !== "eraser") {
+            this.updateBounds(lastX, lastY, radius);
+          }
+
+          for (let i = 2; i < pts.length; i += 2) {
+            const curX = pts[i];
+            const curY = pts[i + 1];
+            const cMidX = (lastX + curX) / 2;
+            const cMidY = (lastY + curY) / 2;
+
+            ctx.beginPath();
+            ctx.moveTo(midX, midY);
+            ctx.quadraticCurveTo(lastX, lastY, cMidX, cMidY);
+            ctx.stroke();
+
+            if (updateBoundsFlag && op.tool !== "eraser") {
+              this.updateBounds(curX, curY, radius);
+            }
+            lastX = curX;
+            lastY = curY;
+            midX = cMidX;
+            midY = cMidY;
+          }
+        }
+        ctx.restore();
+      } else if (op.type === "text") {
+        if (!op.text) return;
+        const screenFontSize = this.previewFontSizesCss[op.sizeLevel] || 24;
+        const fontSizeVirtual = op.fontSizeVirtual || screenFontSize;
+
+        ctx.save();
+        ctx.globalCompositeOperation = "source-over";
+        ctx.globalAlpha = 1.0;
+        ctx.fillStyle = op.color || "#1e293b";
+        ctx.font = `bold ${fontSizeVirtual}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+        ctx.textBaseline = "top";
+
+        const lines = op.text.split("\n");
+        const lineHeight = fontSizeVirtual * 1.3;
+        lines.forEach((line, idx) => {
+          const ly = op.y + idx * lineHeight;
+          ctx.fillText(line, op.x, ly);
+          if (updateBoundsFlag) {
+            const metrics = ctx.measureText(line);
+            this.updateBounds(op.x, ly, 2);
+            this.updateBounds(op.x + metrics.width, ly + lineHeight, 2);
+          }
+        });
+        ctx.restore();
+      }
+    }
+
+    redrawAllOperations() {
+      this.drawCtx.clearRect(0, 0, this.virtualWidth, this.virtualHeight);
+      this.bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+
+      if (this._baseImageElement) {
+        this.drawCtx.drawImage(this._baseImageElement, 0, 0, this.virtualWidth, this.virtualHeight);
+      }
+
+      for (const op of this.operations) {
+        this.renderOperationToContext(this.drawCtx, op, true);
+      }
+
+      if ((this._baseImageElement || this.operations.some((o) => o.tool === "eraser")) && !this.hasStrokes()) {
+        const acc = this.computeAccurateBounds();
+        if (acc) this.bounds = acc;
+      }
+
+      this.notifyHistoryButtons();
+    }
+
+    // =========================================================================
+    // Boundless Viewport Grid / Dot Matrix Background
+    // =========================================================================
+    updateViewportBackground() {
+      if (!this.viewport) return;
+      const bg = this._config.canvas_bg || "grid";
+
+      if (bg === "blank") {
+        this.viewport.style.backgroundColor = "#ffffff";
+        this.viewport.style.backgroundImage = "none";
+        return;
+      }
+
+      const baseStep = 32;
+      const step = Math.max(12, baseStep * this.scale);
+      const ox = ((this.panX % step) + step) % step;
+      const oy = ((this.panY % step) + step) % step;
+
+      this.viewport.style.backgroundColor = "#ffffff";
+      this.viewport.style.backgroundPosition = `${ox}px ${oy}px`;
+      this.viewport.style.backgroundSize = `${step}px ${step}px`;
+
+      if (bg === "dots") {
+        const dotRadius = Math.max(1, Math.min(2.5, 1.2 * this.scale));
+        this.viewport.style.backgroundImage = `radial-gradient(circle, rgba(100, 116, 139, 0.35) ${dotRadius}px, transparent ${dotRadius}px)`;
+      } else {
+        this.viewport.style.backgroundImage = `linear-gradient(to right, rgba(59, 130, 246, 0.16) 1px, transparent 1px), linear-gradient(to bottom, rgba(59, 130, 246, 0.16) 1px, transparent 1px)`;
+      }
+    }
+
+    // Fast accurate pixel scan of the canvas to compute true stroke/text bounding box
+    computeAccurateBounds() {
+      try {
+        const imgData = this.drawCtx.getImageData(0, 0, this.virtualWidth, this.virtualHeight);
+        const data = imgData.data;
+        const w = this.virtualWidth;
+        const h = this.virtualHeight;
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+
+        // Sample every 4 pixels for ultra-fast (~10ms) scan
+        for (let y = 0; y < h; y += 4) {
+          const row = y * w * 4;
+          for (let x = 0; x < w; x += 4) {
+            if (data[row + x * 4 + 3] > 10) {
+              if (x < minX) minX = x;
+              if (x > maxX) maxX = x;
+              if (y < minY) minY = y;
+              if (y > maxY) maxY = y;
+            }
+          }
+        }
+
+        if (minX !== Infinity) {
+          return {
+            minX: Math.max(0, minX - 8),
+            minY: Math.max(0, minY - 8),
+            maxX: Math.min(w, maxX + 8),
+            maxY: Math.min(h, maxY + 8)
+          };
+        }
+      } catch (err) {
+        console.warn("Bounds calculation warning:", err);
+      }
+      return null;
+    }
+
+    // =========================================================================
+    // Auto Centering and Zoom-to-Fit Content (已绘制区域全屏居中)
+    // =========================================================================
     fitViewportToCenter() {
-      const vw = this.viewport.clientWidth || 600;
-      const vh = this.viewport.clientHeight || 520;
-      const pad = 32;
+      const vw = this.viewport ? this.viewport.clientWidth : 600;
+      const vh = this.viewport ? this.viewport.clientHeight : (this._config.height || 560);
+      if (vw <= 0 || vh <= 0) return "100%";
 
-      const availW = Math.max(100, vw - pad);
-      const availH = Math.max(100, vh - pad);
+      const accurate = this.computeAccurateBounds();
+      if (accurate) {
+        this.bounds = accurate;
+      } else {
+        this.bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+      }
 
-      const scaleW = availW / this.virtualWidth;
-      const scaleH = availH / this.virtualHeight;
-      this.scale = Math.min(scaleW, scaleH);
+      let zoomResult = "100%";
 
-      const sheetW = this.virtualWidth * this.scale;
-      const sheetH = this.virtualHeight * this.scale;
+      if (this.hasStrokes()) {
+        const bw = Math.max(60, this.bounds.maxX - this.bounds.minX);
+        const bh = Math.max(60, this.bounds.maxY - this.bounds.minY);
+        const cx = (this.bounds.minX + this.bounds.maxX) / 2;
+        const cy = (this.bounds.minY + this.bounds.maxY) / 2;
 
-      this.panX = (vw - sheetW) / 2;
-      this.panY = (vh - sheetH) / 2;
+        // Leave ~8-10% padding so the drawn content occupies ~80-84% of the viewport (full-screen fit)
+        const padX = Math.max(36, Math.round(vw * 0.08));
+        const padY = Math.max(36, Math.round(vh * 0.08));
 
+        const scaleW = (vw - padX * 2) / bw;
+        const scaleH = (vh - padY * 2) / bh;
+
+        // Auto-scale to fill viewport, clamp between 0.25x and 3.5x
+        this.scale = Math.min(3.5, Math.max(0.25, Math.min(scaleW, scaleH)));
+        this._lastFittedScale = this.scale;
+
+        this.panX = Math.round(vw / 2 - cx * this.scale);
+        this.panY = Math.round(vh / 2 - cy * this.scale);
+        zoomResult = `${Math.round(this.scale * 100)}%`;
+      } else {
+        this.scale = 1.0;
+        this._lastFittedScale = null;
+        this.panX = Math.round((vw - this.virtualWidth) / 2);
+        this.panY = Math.round((vh - this.virtualHeight) / 2);
+        zoomResult = "100%";
+      }
+
+      this.applyTransform();
+      return zoomResult;
+    }
+
+    resetToDefaultCenter() {
+      const vw = this.viewport ? this.viewport.clientWidth : 600;
+      const vh = this.viewport ? this.viewport.clientHeight : (this._config.height || 560);
+      this.scale = 1.0;
+      this._lastFittedScale = null;
+
+      const accurate = this.computeAccurateBounds();
+      if (accurate) {
+        this.bounds = accurate;
+      }
+
+      if (this.hasStrokes()) {
+        const cx = (this.bounds.minX + this.bounds.maxX) / 2;
+        const cy = (this.bounds.minY + this.bounds.maxY) / 2;
+        this.panX = Math.round(vw / 2 - cx);
+        this.panY = Math.round(vh / 2 - cy);
+      } else {
+        this.panX = Math.round((vw - this.virtualWidth) / 2);
+        this.panY = Math.round((vh - this.virtualHeight) / 2);
+      }
       this.applyTransform();
     }
 
     applyTransform() {
-      this.sheet.style.transform = `translate(${this.panX}px, ${this.panY}px) scale(${this.scale})`;
+      if (this.sheet) {
+        this.sheet.style.transform = `translate(${this.panX}px, ${this.panY}px) scale(${this.scale})`;
+      }
+      this.updateViewportBackground();
       this.notifyZoomChange();
     }
 
-    resetZoom() {
-      this.fitViewportToCenter();
+    zoomBy(deltaPercent) {
+      this._lastFittedScale = null;
+      const factor = 1 + deltaPercent;
+      const nextScale = Math.min(5.0, Math.max(0.2, this.scale * factor));
+      const vw = this.viewport ? this.viewport.clientWidth : 600;
+      const vh = this.viewport ? this.viewport.clientHeight : 520;
+      const midX = vw / 2;
+      const midY = vh / 2;
+
+      this.panX = midX - (midX - this.panX) * (nextScale / this.scale);
+      this.panY = midY - (midY - this.panY) * (nextScale / this.scale);
+      this.scale = nextScale;
+      this.applyTransform();
     }
 
     notifyZoomChange() {
-      const resetBtn = this.shadowRoot.getElementById("resetZoomBtn");
-      const zoomText = this.shadowRoot.getElementById("resetZoomText");
-      const isShifted = Math.abs(this.scale - 0.2) > 0.05 || Math.abs(this.panX) > 10 || Math.abs(this.panY) > 10;
-      if (resetBtn) resetBtn.style.display = isShifted ? "flex" : "none";
-      if (zoomText) zoomText.textContent = `${Math.round(this.scale * 100 * 3.5)}%`;
+      const zoomText = this.shadowRoot.getElementById("zoomPercentText");
+      if (zoomText) {
+        zoomText.textContent = `${Math.round(this.scale * 100)}%`;
+      }
     }
 
     // =========================================================================
-    // Touch & Pointer Handling (Bézier Smoothing & Pinch-to-Zoom)
+    // Desktop Wheel Zoom + Right-Click Pan + Mobile Touch Gestures
     // =========================================================================
     bindCanvasEvents() {
       const getVirtualCoords = (clientX, clientY) => {
-        const rect = this.drawCanvas.getBoundingClientRect();
-        const scaleX = this.drawCanvas.width / rect.width;
-        const scaleY = this.drawCanvas.height / rect.height;
+        if (!this._vpRect) {
+          this._vpRect = this.viewport.getBoundingClientRect();
+        }
+        const screenX = clientX - this._vpRect.left;
+        const screenY = clientY - this._vpRect.top;
         return {
-          x: (clientX - rect.left) * scaleX,
-          y: (clientY - rect.top) * scaleY
+          x: (screenX - this.panX) / this.scale,
+          y: (screenY - this.panY) / this.scale
         };
       };
 
+      // Desktop: Cursor-centered Wheel Zoom
+      this.viewport.addEventListener(
+        "wheel",
+        (e) => {
+          e.preventDefault();
+          this._vpRect = this.viewport.getBoundingClientRect();
+          const mouseX = e.clientX - this._vpRect.left;
+          const mouseY = e.clientY - this._vpRect.top;
+          const zoomFactor = e.deltaY < 0 ? 1.15 : 0.85;
+          const nextScale = Math.min(5.0, Math.max(0.2, this.scale * zoomFactor));
+
+          this._lastFittedScale = null;
+          this.panX = mouseX - (mouseX - this.panX) * (nextScale / this.scale);
+          this.panY = mouseY - (mouseY - this.panY) * (nextScale / this.scale);
+          this.scale = nextScale;
+          this.applyTransform();
+        },
+        { passive: false }
+      );
+
+      // Desktop: Suppress context menu for smooth right-click drag pan
+      this.viewport.addEventListener("contextmenu", (e) => e.preventDefault());
+
       const startDraw = (e) => {
-        // Dual touch for pinch-to-zoom and pan
-        if (e.touches && e.touches.length === 2) {
+        // Desktop: Right-click (2) or Middle-click (1) or Hand Tool pan
+        if (e.button === 2 || e.button === 1 || this.currentTool === "hand") {
+          e.preventDefault();
+          this.isPanningCanvas = true;
+          const touch = e.touches ? e.touches[0] : e;
+          this.panStartX = touch.clientX;
+          this.panStartY = touch.clientY;
+          this.initialPanX = this.panX;
+          this.initialPanY = this.panY;
+          this.viewport.style.cursor = "grabbing";
+          return;
+        }
+
+        // Mobile: Dual touch for pinch-to-zoom and pan
+        if (e.touches && e.touches.length >= 2) {
+          if (this.isDrawing && this.hasMoved) {
+            this.saveState();
+          }
           this.isPinching = true;
           this.isDrawing = false;
+          this.hasMoved = false;
           this.initialDistance = Math.hypot(
             e.touches[0].clientX - e.touches[1].clientX,
             e.touches[0].clientY - e.touches[1].clientY
@@ -1148,42 +2079,56 @@
 
         if (this.isPinching || (e.touches && e.touches.length > 1)) return;
 
-        // Text tool placement
+        this._vpRect = this.viewport.getBoundingClientRect();
+
+        // Text tool placement on canvas click
         if (this.currentTool === "text") {
           e.preventDefault();
           const clientX = e.touches ? e.touches[0].clientX : e.clientX;
           const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-          const containerRect = this.sheet.getBoundingClientRect();
-          const relX = (clientX - containerRect.left) / (this.scale || 1);
-          const relY = (clientY - containerRect.top) / (this.scale || 1);
-          const coords = getVirtualCoords(clientX, clientY);
-          this.spawnInlineTextBox(coords.x, coords.y, relX, relY);
+          const screenX = clientX - this._vpRect.left - 40;
+          const screenY = clientY - this._vpRect.top - 20;
+          this.spawnInlineTextBox(screenX, screenY);
           return;
         }
 
         e.preventDefault();
         this.isDrawing = true;
+        this.hasMoved = false;
+
         const clientX = e.touches ? e.touches[0].clientX : e.clientX;
         const clientY = e.touches ? e.touches[0].clientY : e.clientY;
         const coords = getVirtualCoords(clientX, clientY);
+
+        this.startX = coords.x;
+        this.startY = coords.y;
         this.lastX = coords.x;
         this.lastY = coords.y;
         this.midX = coords.x;
         this.midY = coords.y;
+        this.currentStrokePoints = [Math.round(coords.x), Math.round(coords.y)];
 
         this.applyToolStyles();
-        this.updateBounds(coords.x, coords.y);
-
-        // Stamp initial dot
-        this.drawCtx.beginPath();
-        this.drawCtx.arc(coords.x, coords.y, this.getCalculatedLineWidth() / 2, 0, Math.PI * 2);
-        this.drawCtx.fill();
       };
 
       const moveDraw = (e) => {
-        // Pinch zoom & pan
+        // Desktop / Hand Tool: Panning viewport
+        if (this.isPanningCanvas) {
+          e.preventDefault();
+          this._lastFittedScale = null;
+          const touch = e.touches ? e.touches[0] : e;
+          const dx = touch.clientX - this.panStartX;
+          const dy = touch.clientY - this.panStartY;
+          this.panX = this.initialPanX + dx;
+          this.panY = this.initialPanY + dy;
+          this.applyTransform();
+          return;
+        }
+
+        // Mobile: Pinch zoom & pan
         if (this.isPinching && e.touches && e.touches.length === 2) {
           e.preventDefault();
+          this._lastFittedScale = null;
           const dist = Math.hypot(
             e.touches[0].clientX - e.touches[1].clientX,
             e.touches[0].clientY - e.touches[1].clientY
@@ -1210,6 +2155,14 @@
         const clientY = e.touches ? e.touches[0].clientY : e.clientY;
         const coords = getVirtualCoords(clientX, clientY);
 
+        // Filter micro-jitter threshold (2 virtual pixels)
+        if (!this.hasMoved) {
+          if (Math.hypot(coords.x - this.startX, coords.y - this.startY) < 2) {
+            return;
+          }
+          this.hasMoved = true;
+        }
+
         // Quadratic Bézier curve midpoint smoothing
         const currentMidX = (this.lastX + coords.x) / 2;
         const currentMidY = (this.lastY + coords.y) / 2;
@@ -1220,6 +2173,7 @@
         this.drawCtx.stroke();
 
         this.updateBounds(coords.x, coords.y);
+        this.currentStrokePoints.push(Math.round(coords.x), Math.round(coords.y));
 
         this.lastX = coords.x;
         this.lastY = coords.y;
@@ -1228,12 +2182,49 @@
       };
 
       const endDraw = (e) => {
+        if (this.isPanningCanvas) {
+          this.isPanningCanvas = false;
+          this.viewport.style.cursor = this.currentTool === "hand" ? "grab" : "crosshair";
+          return;
+        }
+
         if (e.touches && e.touches.length < 2) {
           this.isPinching = false;
         }
         if (!this.isDrawing) return;
         this.isDrawing = false;
-        this.saveState();
+
+        // If never moved, this was an intentional single tap / click dot
+        if (!this.hasMoved && !this.isPinching) {
+          this.applyToolStyles();
+          this.drawCtx.beginPath();
+          this.drawCtx.arc(this.startX, this.startY, this.getCalculatedLineWidth() / 2, 0, Math.PI * 2);
+          this.drawCtx.fill();
+          this.updateBounds(this.startX, this.startY);
+          this.currentStrokePoints = [Math.round(this.startX), Math.round(this.startY)];
+        }
+
+        // Record per-device vector operation & broadcast to other active terminals
+        if (this.currentStrokePoints.length >= 2) {
+          const op = {
+            opId: `op_${this.clientId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            ownerId: this.clientId,
+            type: "stroke",
+            tool: this.currentTool,
+            color: this.currentColor,
+            size: this.currentSize,
+            points: [...this.currentStrokePoints]
+          };
+          this.operations.push(op);
+          this.redoStack = [];
+          this.notifyHistoryButtons();
+
+          this.broadcastSyncEvent({
+            action: "stroke",
+            ...op
+          });
+        }
+        this.currentStrokePoints = [];
       };
 
       this.drawCanvas.addEventListener("mousedown", startDraw);
@@ -1270,24 +2261,24 @@
     }
 
     getCalculatedLineWidth() {
-      const factor = this.drawCanvas.width / 600;
-      let base = this.currentSize * factor;
-      if (this.currentTool === "eraser") base *= 2.8;
-      if (this.currentTool === "marker") base *= 2.2;
-      return Math.max(3, base);
+      let base = this.currentSize;
+      if (this.currentTool === "eraser") base *= 3.0;
+      if (this.currentTool === "marker") base *= 2.5;
+      return Math.max(2, base);
     }
 
-    updateBounds(x, y) {
-      if (x < this.bounds.minX) this.bounds.minX = x;
-      if (y < this.bounds.minY) this.bounds.minY = y;
-      if (x > this.bounds.maxX) this.bounds.maxX = x;
-      if (y > this.bounds.maxY) this.bounds.maxY = y;
+    updateBounds(x, y, radius = 0) {
+      const r = radius || (this.getCalculatedLineWidth ? this.getCalculatedLineWidth() / 2 : 6);
+      if (x - r < this.bounds.minX) this.bounds.minX = Math.max(0, x - r);
+      if (y - r < this.bounds.minY) this.bounds.minY = Math.max(0, y - r);
+      if (x + r > this.bounds.maxX) this.bounds.maxX = Math.min(this.virtualWidth, x + r);
+      if (y + r > this.bounds.maxY) this.bounds.maxY = Math.min(this.virtualHeight, y + r);
     }
 
     // =========================================================================
     // Inline Draggable Floating Text Box
     // =========================================================================
-    spawnInlineTextBox(canvasX, canvasY, relX, relY) {
+    spawnInlineTextBox(screenX, screenY) {
       if (this.activeTextBox) {
         this.commitActiveTextBox();
       }
@@ -1295,29 +2286,31 @@
       const box = document.createElement("div");
       box.className = "canvas-text-box";
 
-      const containerW = this.virtualWidth;
-      const containerH = this.virtualHeight;
-      const boxW = Math.min(300, 480);
-      const dragBarH = 36;
+      const vw = this.viewport ? this.viewport.clientWidth : 600;
+      const vh = this.viewport ? this.viewport.clientHeight : 520;
+      const boxW = Math.min(380, vw - 32);
 
-      let initLeft = Math.max(8, relX);
-      let initTop = Math.max(8, relY - dragBarH);
+      let initLeft = (screenX !== undefined && !isNaN(screenX)) ? screenX : (vw - boxW) / 2;
+      let initTop = (screenY !== undefined && !isNaN(screenY)) ? screenY : (vh - 160) / 2;
+
+      initLeft = Math.max(12, Math.min(vw - boxW - 12, initLeft));
+      initTop = Math.max(12, Math.min(vh - 180, initTop));
 
       box.style.left = `${initLeft}px`;
       box.style.top = `${initTop}px`;
       box.style.width = `${boxW}px`;
 
-      const curSizeCss = this.previewFontSizesCss[this.selectedTextSizeLevel] || 36;
+      const curSizeCss = this.previewFontSizesCss[this.selectedTextSizeLevel] || 24;
 
       box.innerHTML = `
         <div class="text-drag-bar" id="textDragBar" title="Hold to drag position">
           <div class="drag-title">
-            <ha-icon icon="mdi:arrow-all" style="--mdc-icon-size: 14px;"></ha-icon>
-            <span>Drag to move</span>
+            <ha-icon icon="mdi:arrow-all" style="--mdc-icon-size: 15px;"></ha-icon>
+            <span>Drag to place</span>
           </div>
           <div class="text-box-quick-actions">
             <button type="button" class="btn-text-done" id="inlineTextDoneBtn">
-              <ha-icon icon="mdi:check" style="--mdc-icon-size: 14px;"></ha-icon> Done
+              <ha-icon icon="mdi:check" style="--mdc-icon-size: 15px;"></ha-icon> Done
             </button>
             <button type="button" class="btn-text-cancel" id="inlineTextCancelBtn" title="Cancel">✕</button>
           </div>
@@ -1340,7 +2333,7 @@
         </div>
       `;
 
-      this.sheet.appendChild(box);
+      this.viewport.appendChild(box);
       this.activeTextBox = box;
 
       const dragBar = box.querySelector("#textDragBar");
@@ -1350,10 +2343,9 @@
       const colorDots = box.querySelectorAll(".inline-color-dot");
       const sizePills = box.querySelectorAll(".inline-size-pill");
 
-      // Auto-grow textarea height
       textarea.addEventListener("input", () => {
         textarea.style.height = "auto";
-        textarea.style.height = `${Math.max(44, textarea.scrollHeight)}px`;
+        textarea.style.height = `${Math.max(48, textarea.scrollHeight)}px`;
       });
 
       doneBtn.addEventListener("click", (e) => {
@@ -1383,14 +2375,14 @@
           sizePills.forEach((p) => p.classList.remove("active"));
           pill.classList.add("active");
           this.selectedTextSizeLevel = parseInt(pill.dataset.size, 10);
-          const sizeCss = this.previewFontSizesCss[this.selectedTextSizeLevel] || 36;
+          const sizeCss = this.previewFontSizesCss[this.selectedTextSizeLevel] || 24;
           textarea.style.fontSize = `${sizeCss}px`;
           textarea.style.height = "auto";
-          textarea.style.height = `${Math.max(44, textarea.scrollHeight)}px`;
+          textarea.style.height = `${Math.max(48, textarea.scrollHeight)}px`;
         });
       });
 
-      // Draggable logic with scale compensation
+      // Draggable logic directly inside viewport
       let isDragging = false;
       let startClientX = 0;
       let startClientY = 0;
@@ -1398,7 +2390,7 @@
       let startBoxTop = 0;
 
       const handleDragStart = (e) => {
-        if (e.target.closest("button")) return;
+        if (e.target.closest("button") || e.target.closest(".inline-color-dot") || e.target.closest(".inline-size-pill") || e.target.closest("textarea")) return;
         e.preventDefault();
         e.stopPropagation();
         isDragging = true;
@@ -1413,12 +2405,16 @@
           moveEv.preventDefault();
           moveEv.stopPropagation();
           const curTouch = moveEv.touches ? moveEv.touches[0] : moveEv;
-          const scale = this.scale || 1.0;
-          const deltaX = (curTouch.clientX - startClientX) / scale;
-          const deltaY = (curTouch.clientY - startClientY) / scale;
+          const deltaX = curTouch.clientX - startClientX;
+          const deltaY = curTouch.clientY - startClientY;
 
           let nextLeft = startBoxLeft + deltaX;
           let nextTop = startBoxTop + deltaY;
+
+          const maxLeft = this.viewport.clientWidth - (box.offsetWidth || 360);
+          const maxTop = this.viewport.clientHeight - (box.offsetHeight || 160);
+          nextLeft = Math.max(0, Math.min(Math.max(0, maxLeft), nextLeft));
+          nextTop = Math.max(0, Math.min(Math.max(0, maxTop), nextTop));
 
           box.style.left = `${nextLeft}px`;
           box.style.top = `${nextTop}px`;
@@ -1447,7 +2443,6 @@
     commitActiveTextBox() {
       if (!this.activeTextBox) return;
 
-      // Blur to flush IME characters
       if (document.activeElement && typeof document.activeElement.blur === "function") {
         document.activeElement.blur();
       }
@@ -1455,18 +2450,22 @@
       const textarea = this.activeTextBox.querySelector("#inlineTextInput");
       if (textarea && textarea.value && textarea.value.trim()) {
         const text = textarea.value;
+
         const boxLeft = parseFloat(this.activeTextBox.style.left) || 0;
         const boxTop = parseFloat(this.activeTextBox.style.top) || 0;
 
-        const textOffsetLeft = textarea.offsetLeft + 8;
-        const textOffsetTop = textarea.offsetTop + 6;
+        const textOffsetLeft = textarea.offsetLeft + 12;
+        const textOffsetTop = textarea.offsetTop + 10;
 
-        const posX = boxLeft + textOffsetLeft;
-        const posY = boxTop + textOffsetTop;
+        const screenX = boxLeft + textOffsetLeft;
+        const screenY = boxTop + textOffsetTop;
 
-        const sizeCss = this.previewFontSizesCss[this.selectedTextSizeLevel] || 36;
-        // In virtual coordinates, scale font appropriately
-        const fontSizeVirtual = sizeCss * 2.5;
+        const scale = this.scale || 1.0;
+        const virtualX = (screenX - this.panX) / scale;
+        const virtualY = (screenY - this.panY) / scale;
+
+        const screenFontSize = this.previewFontSizesCss[this.selectedTextSizeLevel] || 24;
+        const fontSizeVirtual = screenFontSize / scale;
 
         this.drawCtx.save();
         this.drawCtx.globalCompositeOperation = "source-over";
@@ -1476,16 +2475,37 @@
         this.drawCtx.textBaseline = "top";
 
         const lines = text.split("\n");
-        const lineHeight = fontSizeVirtual * 1.25;
+        const lineHeight = fontSizeVirtual * 1.3;
         lines.forEach((line, idx) => {
-          const ly = posY + idx * lineHeight;
-          this.drawCtx.fillText(line, posX, ly);
+          const ly = virtualY + idx * lineHeight;
+          this.drawCtx.fillText(line, virtualX, ly);
           const metrics = this.drawCtx.measureText(line);
-          this.updateBounds(posX, ly);
-          this.updateBounds(posX + metrics.width, ly + lineHeight);
+          this.updateBounds(virtualX, ly);
+          this.updateBounds(virtualX + metrics.width, ly + lineHeight);
         });
+
         this.drawCtx.restore();
-        this.saveState();
+        const op = {
+          opId: `op_${this.clientId}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          ownerId: this.clientId,
+          type: "text",
+          text,
+          x: virtualX,
+          y: virtualY,
+          sizeLevel: this.selectedTextSizeLevel,
+          fontSizeVirtual,
+          color: this.selectedTextColor
+        };
+        this.operations.push(op);
+        this.redoStack = [];
+        this.notifyHistoryButtons();
+        this.showToast("Text added to canvas");
+
+        // Broadcast text operation to peers
+        this.broadcastSyncEvent({
+          action: "text",
+          ...op
+        });
       }
 
       this.removeActiveTextBox();
@@ -1499,131 +2519,416 @@
     }
 
     // =========================================================================
-    // History Stack (Undo / Redo / Clear)
+    // Per-Device Collaborative Undo / Redo & Canvas Reset
     // =========================================================================
     saveState() {
-      if (this.historyStep < this.historyStack.length - 1) {
-        this.historyStack = this.historyStack.slice(0, this.historyStep + 1);
-      }
-      this.historyStack.push(this.drawCtx.getImageData(0, 0, this.virtualWidth, this.virtualHeight));
-      if (this.historyStack.length > this.maxHistory) {
-        this.historyStack.shift();
-      } else {
-        this.historyStep++;
-      }
       this.notifyHistoryButtons();
     }
 
-    undo() {
-      if (this.historyStep > 0) {
-        this.historyStep--;
-        this.drawCtx.putImageData(this.historyStack[this.historyStep], 0, 0);
+    undo(broadcast = true) {
+      // Only undo operations authored on THIS device (ownerId === this.clientId)
+      let targetIdx = -1;
+      for (let i = this.operations.length - 1; i >= 0; i--) {
+        if (this.operations[i].ownerId === this.clientId) {
+          targetIdx = i;
+          break;
+        }
+      }
+
+      if (targetIdx === -1) {
         this.notifyHistoryButtons();
+        return;
+      }
+
+      const [removedOp] = this.operations.splice(targetIdx, 1);
+      this.redoStack.push(removedOp);
+      this.redrawAllOperations();
+
+      if (broadcast) {
+        this.broadcastSyncEvent({
+          action: "undo_op",
+          targetOpId: removedOp.opId,
+          ownerId: this.clientId
+        });
       }
     }
 
-    redo() {
-      if (this.historyStep < this.historyStack.length - 1) {
-        this.historyStep++;
-        this.drawCtx.putImageData(this.historyStack[this.historyStep], 0, 0);
+    redo(broadcast = true) {
+      if (this.redoStack.length === 0) {
         this.notifyHistoryButtons();
+        return;
+      }
+
+      const restoredOp = this.redoStack.pop();
+      this.operations.push(restoredOp);
+      this.redrawAllOperations();
+
+      if (broadcast) {
+        this.broadcastSyncEvent({
+          action: "redo_op",
+          op: restoredOp,
+          ownerId: this.clientId
+        });
       }
     }
 
-    clearCanvas() {
+    clearCanvas(broadcast = true) {
       this.removeActiveTextBox();
+      this.operations = [];
+      this.redoStack = [];
+      this._baseImageElement = null;
+      this._baseImageDataUrl = null;
       this.drawCtx.clearRect(0, 0, this.virtualWidth, this.virtualHeight);
       this.bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
-      this.saveState();
+      this.notifyHistoryButtons();
       this.fitViewportToCenter();
+      if (broadcast) {
+        this.broadcastSyncEvent({ action: "clear" });
+      }
     }
 
     notifyHistoryButtons() {
       const btnUndo = this.shadowRoot.getElementById("btnUndo");
       const btnRedo = this.shadowRoot.getElementById("btnRedo");
-      if (btnUndo) btnUndo.disabled = this.historyStep <= 0;
-      if (btnRedo) btnRedo.disabled = this.historyStep >= this.historyStack.length - 1;
+      const hasOwnOps = this.operations.some((op) => op.ownerId === this.clientId);
+      if (btnUndo) btnUndo.disabled = !hasOwnOps;
+      if (btnRedo) btnRedo.disabled = this.redoStack.length === 0;
     }
 
     // =========================================================================
-    // 300 DPI Physical Paper Rasterizer & Auto Bounding Box
+    // Interactive Print Framing Modal (Fixed Paper Frame + Pan/Zoom Drawing)
     // =========================================================================
-    exportCroppedRaster(paperKey = "a4", colorMode = "color") {
+    openPrintFramingModal() {
       this.commitActiveTextBox();
 
-      let bx1 = this.bounds.minX;
-      let by1 = this.bounds.minY;
-      let bx2 = this.bounds.maxX;
-      let by2 = this.bounds.maxY;
+      const root = this.shadowRoot;
+      const modal = root.getElementById("printModal");
+      const stage = root.getElementById("framingStage");
+      const previewCanvas = root.getElementById("framingPreviewCanvas");
+      const previewCtx = previewCanvas.getContext("2d");
+      const framingBox = root.getElementById("framingBox");
+      const dimensionsBadge = root.getElementById("frameDimensionsBadge");
 
-      // Fallback if no strokes recorded yet
-      if (bx1 === Infinity || bx2 === -Infinity) {
-        bx1 = 0; by1 = 0; bx2 = this.virtualWidth; by2 = this.virtualHeight;
+      const selectPaper = root.getElementById("selectPaperSize");
+      const selectColor = root.getElementById("selectColorMode");
+      const btnPortrait = root.getElementById("btnOrientPortrait");
+      const btnLandscape = root.getElementById("btnOrientLandscape");
+      const btnFitAll = root.getElementById("btnFrameFitAll");
+      const btnZoomOut = root.getElementById("btnFrameZoomOut");
+      const btnZoomIn = root.getElementById("btnFrameZoomIn");
+      const btnReset = root.getElementById("btnFrameReset");
+      const btnConfirm = root.getElementById("btnConfirmPrint");
+
+      modal.style.display = "flex";
+
+      const stageW = stage.clientWidth || 580;
+      const stageH = stage.clientHeight || 330;
+      previewCanvas.width = stageW;
+      previewCanvas.height = stageH;
+
+      // Ensure accurate bounds of current drawing
+      const acc = this.computeAccurateBounds();
+      if (acc) {
+        this.bounds = acc;
       }
 
-      // Add 10mm margin (approx 118 px at 300 DPI)
-      const margin = 118;
-      bx1 = Math.max(0, bx1 - margin);
-      by1 = Math.max(0, by1 - margin);
-      bx2 = Math.min(this.virtualWidth, bx2 + margin);
-      by2 = Math.min(this.virtualHeight, by2 + margin);
+      let minX = this.bounds.minX;
+      let minY = this.bounds.minY;
+      let maxX = this.bounds.maxX;
+      let maxY = this.bounds.maxY;
 
-      const contentW = Math.max(100, bx2 - bx1);
-      const contentH = Math.max(100, by2 - by1);
+      if (!this.hasStrokes()) {
+        minX = 1100; minY = 1100; maxX = 2100; maxY = 2100;
+      }
 
-      const profile = PAPER_PROFILES[paperKey] || PAPER_PROFILES.a4;
-      let targetW = profile.widthPx || contentW;
-      let targetH = profile.heightPx || contentH;
+      const contentW = Math.max(80, maxX - minX);
+      const contentH = Math.max(80, maxY - minY);
+      const contentCX = (minX + maxX) / 2;
+      const contentCY = (minY + maxY) / 2;
 
-      // Auto-orient target paper if content is landscape
-      const isLandscapeContent = contentW > contentH;
-      if (targetW && targetH) {
-        if (isLandscapeContent && targetH > targetW) {
-          const tmp = targetW; targetW = targetH; targetH = tmp;
-        } else if (!isLandscapeContent && targetW > targetH) {
-          const tmp = targetW; targetW = targetH; targetH = tmp;
+      let currentOrientation = btnLandscape.classList.contains("active") ? "landscape" : "portrait";
+      let frameX = 0;
+      let frameY = 0;
+      let frameW = 0;
+      let frameH = 0;
+
+      // Transform state of the underlying virtual drawing inside the preview stage
+      let pScale = 0.25;
+      let pPanX = 0;
+      let pPanY = 0;
+
+      const getPaperDimensions = () => {
+        const key = selectPaper.value || "a4";
+        const profile = PAPER_PROFILES[key] || PAPER_PROFILES.a4;
+        const w = profile.widthPx;
+        const h = profile.heightPx;
+        const name = profile.name;
+        if (currentOrientation === "landscape") {
+          return { width: Math.max(w, h), height: Math.min(w, h), name: `${name} Landscape` };
         }
-      }
-
-      const outCanvas = document.createElement("canvas");
-      outCanvas.width = targetW;
-      outCanvas.height = targetH;
-      const outCtx = outCanvas.getContext("2d");
-
-      // Fill white
-      outCtx.fillStyle = "#ffffff";
-      outCtx.fillRect(0, 0, targetW, targetH);
-
-      // Render background if not fit
-      outCtx.drawImage(this.bgCanvas, bx1, by1, contentW, contentH, 0, 0, targetW, targetH);
-
-      // Calculate aspect-ratio fit
-      const scaleFit = Math.min(targetW / contentW, targetH / contentH);
-      const renderW = contentW * scaleFit;
-      const renderH = contentH * scaleFit;
-      const offsetX = (targetW - renderW) / 2;
-      const offsetY = (targetH - renderH) / 2;
-
-      outCtx.drawImage(this.drawCanvas, bx1, by1, contentW, contentH, offsetX, offsetY, renderW, renderH);
-
-      // Monochrome filter if requested
-      if (colorMode === "monochrome") {
-        const imgData = outCtx.getImageData(0, 0, targetW, targetH);
-        const d = imgData.data;
-        for (let i = 0; i < d.length; i += 4) {
-          const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-          d[i] = gray; d[i + 1] = gray; d[i + 2] = gray;
-        }
-        outCtx.putImageData(imgData, 0, 0);
-      }
-
-      return {
-        dataUrl: outCanvas.toDataURL("image/jpeg", 0.94),
-        rawDrawDataUrl: this.drawCanvas.toDataURL("image/png"),
-        width: targetW,
-        height: targetH,
-        paperSize: profile.name
+        return { width: Math.min(w, h), height: Math.max(w, h), name: `${name} Portrait` };
       };
+
+      // Compute fixed centered paper frame geometry inside the preview stage
+      const updateFixedPaperFrame = () => {
+        const paper = getPaperDimensions();
+        const aspect = paper.width / paper.height;
+        const margin = 24;
+        const availW = Math.max(100, stageW - margin * 2);
+        const availH = Math.max(100, stageH - margin * 2);
+
+        if (availW / availH > aspect) {
+          frameH = availH;
+          frameW = frameH * aspect;
+        } else {
+          frameW = availW;
+          frameH = frameW / aspect;
+        }
+
+        frameX = (stageW - frameW) / 2;
+        frameY = (stageH - frameH) / 2;
+
+        framingBox.style.left = `${Math.round(frameX)}px`;
+        framingBox.style.top = `${Math.round(frameY)}px`;
+        framingBox.style.width = `${Math.round(frameW)}px`;
+        framingBox.style.height = `${Math.round(frameH)}px`;
+        dimensionsBadge.textContent = paper.name;
+      };
+
+      const renderPreviewStage = () => {
+        // Fill outer stage background with subtle light slate, and paper frame interior with pure white
+        previewCtx.fillStyle = "#f1f5f9";
+        previewCtx.fillRect(0, 0, stageW, stageH);
+
+        previewCtx.fillStyle = "#ffffff";
+        previewCtx.fillRect(frameX, frameY, frameW, frameH);
+
+        previewCtx.save();
+        previewCtx.translate(pPanX, pPanY);
+        previewCtx.scale(pScale, pScale);
+        previewCtx.drawImage(this.drawCanvas, 0, 0);
+        previewCtx.restore();
+      };
+
+      // Scale and center the drawn content so it fits neatly inside the fixed paper frame
+      const fitContentIntoFrame = () => {
+        updateFixedPaperFrame();
+        const innerW = frameW * 0.86;
+        const innerH = frameH * 0.86;
+        pScale = Math.min(innerW / contentW, innerH / contentH);
+        pScale = Math.min(2.5, Math.max(0.05, pScale));
+
+        const frameCenterX = frameX + frameW / 2;
+        const frameCenterY = frameY + frameH / 2;
+        pPanX = frameCenterX - contentCX * pScale;
+        pPanY = frameCenterY - contentCY * pScale;
+
+        renderPreviewStage();
+      };
+
+      // Reset view to standard 1:1 canvas overview centered on drawing
+      const resetViewStandard = () => {
+        updateFixedPaperFrame();
+        const stdSpan = 1200;
+        pScale = Math.min(frameW / stdSpan, frameH / stdSpan);
+        const frameCenterX = frameX + frameW / 2;
+        const frameCenterY = frameY + frameH / 2;
+        pPanX = frameCenterX - contentCX * pScale;
+        pPanY = frameCenterY - contentCY * pScale;
+        renderPreviewStage();
+      };
+
+      const zoomPreviewBy = (factor, pivotX = frameX + frameW / 2, pivotY = frameY + frameH / 2) => {
+        const nextScale = Math.min(4.0, Math.max(0.04, pScale * factor));
+        pPanX = pivotX - (pivotX - pPanX) * (nextScale / pScale);
+        pPanY = pivotY - (pivotY - pPanY) * (nextScale / pScale);
+        pScale = nextScale;
+        renderPreviewStage();
+      };
+
+      // Initial layout: fit content cleanly into the fixed paper frame
+      fitContentIntoFrame();
+
+      btnPortrait.onclick = () => {
+        btnPortrait.classList.add("active");
+        btnLandscape.classList.remove("active");
+        currentOrientation = "portrait";
+        fitContentIntoFrame();
+      };
+
+      btnLandscape.onclick = () => {
+        btnLandscape.classList.add("active");
+        btnPortrait.classList.remove("active");
+        currentOrientation = "landscape";
+        fitContentIntoFrame();
+      };
+
+      selectPaper.onchange = () => {
+        fitContentIntoFrame();
+      };
+
+      btnFitAll.onclick = () => fitContentIntoFrame();
+      btnReset.onclick = () => resetViewStandard();
+      if (btnZoomOut) btnZoomOut.onclick = () => zoomPreviewBy(0.84);
+      if (btnZoomIn) btnZoomIn.onclick = () => zoomPreviewBy(1.18);
+
+      // Mouse wheel zoom inside preview stage
+      stage.onwheel = (e) => {
+        e.preventDefault();
+        const rect = stage.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        const factor = e.deltaY < 0 ? 1.12 : 0.88;
+        zoomPreviewBy(factor, mx, my);
+      };
+
+      // Drag / Pinch canvas inside preview stage
+      let isDraggingStage = false;
+      let isPinchingStage = false;
+      let startPointerX = 0;
+      let startPointerY = 0;
+      let startPanX = 0;
+      let startPanY = 0;
+      let startPinchDist = 0;
+      let startPinchScale = 1;
+      let startPinchMidX = 0;
+      let startPinchMidY = 0;
+
+      const handleStagePointerDown = (e) => {
+        e.preventDefault();
+        const rect = stage.getBoundingClientRect();
+
+        if (e.touches && e.touches.length >= 2) {
+          isPinchingStage = true;
+          isDraggingStage = false;
+          startPinchDist = Math.hypot(
+            e.touches[0].clientX - e.touches[1].clientX,
+            e.touches[0].clientY - e.touches[1].clientY
+          );
+          startPinchMidX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+          startPinchMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
+          startPinchScale = pScale;
+          startPanX = pPanX;
+          startPanY = pPanY;
+          return;
+        }
+
+        isDraggingStage = true;
+        isPinchingStage = false;
+        const touch = e.touches ? e.touches[0] : e;
+        startPointerX = touch.clientX;
+        startPointerY = touch.clientY;
+        startPanX = pPanX;
+        startPanY = pPanY;
+
+        const handleStagePointerMove = (moveEv) => {
+          if (!isDraggingStage && !isPinchingStage) return;
+          moveEv.preventDefault();
+
+          if (isPinchingStage && moveEv.touches && moveEv.touches.length >= 2) {
+            const curDist = Math.hypot(
+              moveEv.touches[0].clientX - moveEv.touches[1].clientX,
+              moveEv.touches[0].clientY - moveEv.touches[1].clientY
+            );
+            const curMidX = (moveEv.touches[0].clientX + moveEv.touches[1].clientX) / 2 - rect.left;
+            const curMidY = (moveEv.touches[0].clientY + moveEv.touches[1].clientY) / 2 - rect.top;
+            const factor = curDist / (startPinchDist || 1);
+            const nextScale = Math.min(4.0, Math.max(0.04, startPinchScale * factor));
+
+            pPanX = curMidX - (startPinchMidX - startPanX) * (nextScale / startPinchScale);
+            pPanY = curMidY - (startPinchMidY - startPanY) * (nextScale / startPinchScale);
+            pScale = nextScale;
+            renderPreviewStage();
+            return;
+          }
+
+          if (isDraggingStage) {
+            const curTouch = moveEv.touches ? moveEv.touches[0] : moveEv;
+            pPanX = startPanX + (curTouch.clientX - startPointerX);
+            pPanY = startPanY + (curTouch.clientY - startPointerY);
+            renderPreviewStage();
+          }
+        };
+
+        const handleStagePointerUp = () => {
+          isDraggingStage = false;
+          isPinchingStage = false;
+          window.removeEventListener("mousemove", handleStagePointerMove);
+          window.removeEventListener("mouseup", handleStagePointerUp);
+          window.removeEventListener("touchmove", handleStagePointerMove);
+          window.removeEventListener("touchend", handleStagePointerUp);
+        };
+
+        window.addEventListener("mousemove", handleStagePointerMove, { passive: false });
+        window.addEventListener("mouseup", handleStagePointerUp);
+        window.addEventListener("touchmove", handleStagePointerMove, { passive: false });
+        window.addEventListener("touchend", handleStagePointerUp);
+      };
+
+      stage.onmousedown = handleStagePointerDown;
+      stage.ontouchstart = handleStagePointerDown;
+
+      const executePrint = async () => {
+        btnConfirm.removeEventListener("click", executePrint);
+        modal.style.display = "none";
+
+        const paper = getPaperDimensions();
+        const colorMode = selectColor.value || "color";
+
+        // Virtual canvas coordinates currently visible inside the fixed paper frame
+        const virtualCropX = (frameX - pPanX) / pScale;
+        const virtualCropY = (frameY - pPanY) / pScale;
+        const virtualCropW = frameW / pScale;
+
+        const targetW = paper.width;
+        const targetH = paper.height;
+
+        const outCanvas = document.createElement("canvas");
+        outCanvas.width = targetW;
+        outCanvas.height = targetH;
+        const outCtx = outCanvas.getContext("2d");
+
+        outCtx.fillStyle = "#ffffff";
+        outCtx.fillRect(0, 0, targetW, targetH);
+
+        // Exact 300 DPI affine transform mapping the paper frame region to physical pixels
+        const dpiScale = targetW / virtualCropW;
+        outCtx.save();
+        outCtx.translate(-virtualCropX * dpiScale, -virtualCropY * dpiScale);
+        outCtx.scale(dpiScale, dpiScale);
+        outCtx.drawImage(this.drawCanvas, 0, 0);
+        outCtx.restore();
+
+        if (colorMode === "monochrome") {
+          const imgData = outCtx.getImageData(0, 0, targetW, targetH);
+          const d = imgData.data;
+          for (let i = 0; i < d.length; i += 4) {
+            const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+            d[i] = gray; d[i + 1] = gray; d[i + 2] = gray;
+          }
+          outCtx.putImageData(imgData, 0, 0);
+        }
+
+        const rasterResult = {
+          dataUrl: outCanvas.toDataURL("image/jpeg", 0.94),
+          rawDrawDataUrl: this.drawCanvas.toDataURL("image/png"),
+          paperSize: paper.name
+        };
+
+        await this.dispatchPrint(rasterResult);
+
+        await CanvasHistoryDB.saveItem({
+          thumbnail: rasterResult.dataUrl,
+          rawDrawing: rasterResult.rawDrawDataUrl,
+          paperSize: rasterResult.paperSize,
+          printed: true
+        }, this._config.max_history_items || 30);
+
+        this.clearCanvas(true);
+        this.showToast("Print dispatched & canvas archived!");
+      };
+
+      btnConfirm.onclick = executePrint;
     }
 
     // =========================================================================
@@ -1637,11 +2942,9 @@
       if (mode === "ipp" && printerIp) {
         try {
           const url = `http://${printerIp}:${this._config.printer_port || 631}/ipp/print`;
-          // Convert Data URL to binary blob
           const res = await fetch(rasterResult.dataUrl);
           const blob = await res.blob();
-          
-          // Send print request (if gateway / CORS allows)
+
           const response = await fetch(url, {
             method: "POST",
             headers: { "Content-Type": "image/jpeg" },
@@ -1652,7 +2955,7 @@
             return true;
           }
         } catch (err) {
-          console.warn("Direct IPP dispatch blocked (CORS / Mixed Content). Falling back to OS Print dialog...", err);
+          console.warn("Direct IPP dispatch blocked (CORS/Mixed Content). Falling back to OS Print...", err);
         }
       }
 
@@ -1678,8 +2981,7 @@
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               image: rasterResult.dataUrl,
-              copies: 1,
-              color: this._config.color_mode === "color"
+              copies: 1
             })
           });
           if (resp.ok) {
@@ -1691,7 +2993,7 @@
         }
       }
 
-      // 4. Fallback: OS System Print Dialog (Universal 100% Support)
+      // 4. Universal Fallback: OS System Print Dialog
       return this.triggerOSPrint(rasterResult.dataUrl);
     }
 
@@ -1718,7 +3020,7 @@
         </html>
       `);
       printWin.document.close();
-      this.showToast("Print preview opened!");
+      this.showToast("Print preview ready");
       return true;
     }
 
@@ -1726,68 +3028,74 @@
     // Core Button Actions Workflow
     // =========================================================================
     async handleSaveAndNew() {
-      const raster = this.exportCroppedRaster(this._config.paper_size, this._config.color_mode);
+      this.commitActiveTextBox();
+
+      let bx1 = this.bounds.minX;
+      let by1 = this.bounds.minY;
+      let bx2 = this.bounds.maxX;
+      let by2 = this.bounds.maxY;
+
+      if (!this.hasStrokes()) {
+        bx1 = 1000; by1 = 1000; bx2 = 2200; by2 = 2200;
+      }
+
+      const pad = 80;
+      bx1 = Math.max(0, bx1 - pad);
+      by1 = Math.max(0, by1 - pad);
+      bx2 = Math.min(this.virtualWidth, bx2 + pad);
+      by2 = Math.min(this.virtualHeight, by2 + pad);
+
+      const targetW = Math.max(200, bx2 - bx1);
+      const targetH = Math.max(200, by2 - by1);
+
+      const outCanvas = document.createElement("canvas");
+      outCanvas.width = targetW;
+      outCanvas.height = targetH;
+      const outCtx = outCanvas.getContext("2d");
+
+      outCtx.fillStyle = "#ffffff";
+      outCtx.fillRect(0, 0, targetW, targetH);
+      outCtx.drawImage(this.drawCanvas, bx1, by1, targetW, targetH, 0, 0, targetW, targetH);
+
+      const thumbnail = outCanvas.toDataURL("image/jpeg", 0.92);
+      const rawDrawing = this.drawCanvas.toDataURL("image/png");
+
       await CanvasHistoryDB.saveItem({
-        thumbnail: raster.dataUrl,
-        rawDrawing: raster.rawDrawDataUrl,
-        paperSize: raster.paperSize,
+        thumbnail,
+        rawDrawing,
+        paperSize: "Infinite Canvas",
         printed: false
-      });
-      this.clearCanvas();
-      this.showToast("Drawing saved! Ready for new canvas.");
+      }, this._config.max_history_items || 30);
+
+      this.clearCanvas(true);
+      this.showToast("Drawing saved! Ready for new sketch.");
     }
 
     handleDiscardAndNew() {
       if (this._config.confirm_discard) {
-        if (!confirm("Are you sure you want to discard this drawing without saving?")) {
+        if (!confirm("Discard current drawing and reset canvas?")) {
           return;
         }
       }
-      this.clearCanvas();
+      this.clearCanvas(true);
       this.showToast("Canvas discarded and reset.");
-    }
-
-    async handlePrintAndNew() {
-      const root = this.shadowRoot;
-      const modal = root.getElementById("printModal");
-      const previewImg = root.getElementById("printPreviewImg");
-      const raster = this.exportCroppedRaster(this._config.paper_size, this._config.color_mode);
-
-      previewImg.src = raster.dataUrl;
-      modal.style.display = "flex";
-
-      const confirmBtn = root.getElementById("btnConfirmPrint");
-      const onConfirm = async () => {
-        confirmBtn.removeEventListener("click", onConfirm);
-        modal.style.display = "none";
-
-        const selectedPaper = root.getElementById("selectPaperSize").value;
-        const selectedColor = root.getElementById("selectColorMode").value;
-        const finalRaster = this.exportCroppedRaster(selectedPaper, selectedColor);
-
-        await this.dispatchPrint(finalRaster);
-
-        // Auto-archive with printed flag
-        await CanvasHistoryDB.saveItem({
-          thumbnail: finalRaster.dataUrl,
-          rawDrawing: finalRaster.rawDrawDataUrl,
-          paperSize: finalRaster.paperSize,
-          printed: true
-        });
-
-        this.clearCanvas();
-      };
-      confirmBtn.addEventListener("click", onConfirm);
     }
 
     async openHistory() {
       const root = this.shadowRoot;
       const modal = root.getElementById("historyModal");
       const grid = root.getElementById("historyGrid");
+      const titleSpan = root.getElementById("historyModalTitle");
+      const maxLimit = Math.max(5, Math.min(100, Number(this._config.max_history_items) || 30));
+
       grid.innerHTML = `<div style="grid-column: 1/-1; text-align: center; color: var(--text-secondary); padding: 20px;">Loading history...</div>`;
       modal.style.display = "flex";
 
-      const items = await CanvasHistoryDB.getAllItems(40);
+      const items = await CanvasHistoryDB.getAllItems(maxLimit);
+      if (titleSpan) {
+        titleSpan.innerHTML = `<ha-icon icon="mdi:history" style="color: var(--primary-accent);"></ha-icon> <span>Drawings History (${items.length} / ${maxLimit})</span>`;
+      }
+
       if (items.length === 0) {
         grid.innerHTML = `<div style="grid-column: 1/-1; text-align: center; color: var(--text-secondary); padding: 30px;">No saved drawings found.</div>`;
         return;
@@ -1806,7 +3114,7 @@
             </span>
             <div class="history-actions">
               <button class="btn-mini" data-action="re-edit" data-id="${item.id}" title="Load onto canvas to continue editing">Edit</button>
-              <button class="btn-mini" data-action="re-print" data-id="${item.id}" title="Print again">Print</button>
+              ${this.isPrintingEnabled() ? `<button class="btn-mini" data-action="re-print" data-id="${item.id}" title="Print again">Print</button>` : ""}
               <button class="btn-mini" data-action="download" data-id="${item.id}" title="Download image">Export</button>
               <button class="btn-mini danger" data-action="delete" data-id="${item.id}" title="Delete">✕</button>
             </div>
@@ -1817,9 +3125,14 @@
           btn.addEventListener("click", async (e) => {
             const action = e.currentTarget.dataset.action;
             if (action === "re-edit") {
+              this.operations = [];
+              this.redoStack = [];
               await this.loadDrawingFromDataUrl(item.rawDrawing || item.thumbnail);
               modal.style.display = "none";
               this.showToast("Drawing restored onto canvas!");
+              // Broadcast newly restored drawing to peers
+              const payload = this.buildCanvasPatchPayload("sync_state");
+              this.broadcastSyncEvent(payload);
             } else if (action === "re-print") {
               this.dispatchPrint({ dataUrl: item.thumbnail, paperSize: item.paperSize || "A4" });
             } else if (action === "download") {
@@ -1840,14 +3153,24 @@
       });
     }
 
-    async loadDrawingFromDataUrl(url) {
+    async loadDrawingFromDataUrl(url, initialBounds = null, preserveOperations = false) {
       return new Promise((resolve) => {
         const img = new Image();
         img.onload = () => {
-          this.drawCtx.clearRect(0, 0, this.virtualWidth, this.virtualHeight);
-          this.drawCtx.drawImage(img, 0, 0, this.virtualWidth, this.virtualHeight);
-          this.bounds = { minX: 0, minY: 0, maxX: this.virtualWidth, maxY: this.virtualHeight };
-          this.saveState();
+          this._baseImageElement = img;
+          this._baseImageDataUrl = url;
+          if (!preserveOperations) {
+            this.operations = [];
+            this.redoStack = [];
+          }
+          this.redrawAllOperations();
+          if (initialBounds) {
+            this.bounds = { ...initialBounds };
+          } else {
+            const acc = this.computeAccurateBounds();
+            this.bounds = acc || { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+          }
+          this.notifyHistoryButtons();
           this.fitViewportToCenter();
           resolve(true);
         };
@@ -1875,7 +3198,10 @@
       // Primary Actions
       root.getElementById("btnSaveNew").addEventListener("click", () => this.handleSaveAndNew());
       root.getElementById("btnDiscardNew").addEventListener("click", () => this.handleDiscardAndNew());
-      root.getElementById("btnPrintNew").addEventListener("click", () => this.handlePrintAndNew());
+      const printBtn = root.getElementById("btnPrintNew");
+      if (printBtn) {
+        printBtn.addEventListener("click", () => this.openPrintFramingModal());
+      }
       root.getElementById("btnHistory").addEventListener("click", () => this.openHistory());
 
       // Modals Close
@@ -1883,7 +3209,7 @@
         root.getElementById("historyModal").style.display = "none";
       });
       root.getElementById("btnClearHistory").addEventListener("click", async () => {
-        if (confirm("Are you sure you want to delete ALL saved drawings?")) {
+        if (confirm("Delete all saved drawings from history?")) {
           await CanvasHistoryDB.clearAll();
           this.openHistory();
         }
@@ -1902,7 +3228,16 @@
           toolBtns.forEach((b) => b.classList.remove("active"));
           btn.classList.add("active");
           this.currentTool = btn.dataset.tool;
-          if (this.currentTool !== "text" && this.activeTextBox) {
+
+          if (this.currentTool === "hand") {
+            this.viewport.style.cursor = "grab";
+          } else {
+            this.viewport.style.cursor = "crosshair";
+          }
+
+          if (this.currentTool === "text") {
+            this.spawnInlineTextBox();
+          } else if (this.activeTextBox) {
             this.commitActiveTextBox();
           }
         });
@@ -1925,7 +3260,7 @@
           colorSwatches.forEach((b) => b.classList.remove("active"));
           btn.classList.add("active");
           this.currentColor = btn.dataset.color;
-          if (this.currentTool === "eraser") {
+          if (this.currentTool === "eraser" || this.currentTool === "hand") {
             const penBtn = root.querySelector('.tool-btn[data-tool="pen"]');
             if (penBtn) penBtn.click();
           }
@@ -1937,7 +3272,7 @@
         picker.addEventListener("input", (e) => {
           colorSwatches.forEach((b) => b.classList.remove("active"));
           this.currentColor = e.target.value;
-          if (this.currentTool === "eraser") {
+          if (this.currentTool === "eraser" || this.currentTool === "hand") {
             const penBtn = root.querySelector('.tool-btn[data-tool="pen"]');
             if (penBtn) penBtn.click();
           }
@@ -1949,12 +3284,23 @@
       root.getElementById("btnRedo").addEventListener("click", () => this.redo());
       root.getElementById("btnClear").addEventListener("click", () => {
         if (confirm("Clear all drawings on the canvas?")) {
-          this.clearCanvas();
+          this.clearCanvas(true);
         }
       });
 
-      // Reset Zoom Pill
-      root.getElementById("resetZoomBtn").addEventListener("click", () => this.resetZoom());
+      // Viewport Control Pod Buttons
+      root.getElementById("btnZoomOut").addEventListener("click", () => this.zoomBy(-0.2));
+      root.getElementById("btnZoomIn").addEventListener("click", () => this.zoomBy(0.2));
+      root.getElementById("btnZoomReset").addEventListener("click", () => {
+        const isFitted = this._lastFittedScale && Math.abs(this.scale - this._lastFittedScale) < 0.03;
+        if (this.hasStrokes() && !isFitted) {
+          const zoomText = this.fitViewportToCenter();
+          this.showToast(`Fit to content (${zoomText})`);
+        } else {
+          this.resetToDefaultCenter();
+          this.showToast("Canvas centered (100%)");
+        }
+      });
 
       // Commit text box on outside click
       this.viewport.addEventListener("mousedown", (e) => {
@@ -1968,22 +3314,37 @@
       const title = this.shadowRoot.getElementById("titleText");
       if (title) title.textContent = this._config.title || "Canvas Studio";
 
+      const isPrint = this.isPrintingEnabled();
       const badge = this.shadowRoot.getElementById("printerBadge");
       const statusText = this.shadowRoot.getElementById("printerStatusText");
-      if (badge && statusText) {
+      const printBtn = this.shadowRoot.getElementById("btnPrintNew");
+
+      if (printBtn) {
+        printBtn.style.display = isPrint ? "inline-flex" : "none";
+      }
+
+      if (badge) {
+        badge.style.display = isPrint ? "flex" : "none";
         if (this._config.printer_ip) {
           badge.classList.remove("offline");
-          statusText.textContent = this._config.printer_ip;
+          if (statusText) statusText.textContent = `${this._config.printer_ip}:${this._config.printer_port || 631}`;
         } else {
           badge.classList.add("offline");
-          statusText.textContent = "No Printer";
+          if (statusText) statusText.textContent = "OS Print";
         }
       }
+
+      if (this.viewport && this._config.height) {
+        this.viewport.style.height = `${this._config.height}px`;
+      }
+
+      this.updateViewportBackground();
+      this.initSyncEngine();
     }
   }
 
   // =========================================================================
-  // Lovelace Card Visual Form Editor (<ha-form>)
+  // Lovelace Visual Form Configuration Editor (<ha-form>)
   // =========================================================================
   const EDITOR_SCHEMA = [
     {
@@ -1992,98 +3353,111 @@
       selector: { text: {} }
     },
     {
-      type: "expandable",
-      name: "printer_settings",
-      title: "Printer Configuration",
-      icon: "mdi:printer-settings",
-      schema: [
-        {
-          name: "printer_ip",
-          label: "Printer IP Address or Hostname (e.g. 192.168.2.71)",
-          selector: { text: {} }
-        },
-        {
-          name: "printer_port",
-          label: "Printer Port (Default: 631 for IPP, 9100 for RAW)",
-          selector: { number: { min: 1, max: 65535, mode: "box" } }
-        },
-        {
-          name: "print_mode",
-          label: "Printing Protocol / Dispatch Mode",
-          selector: {
-            select: {
-              options: [
-                { value: "ipp", label: "Direct IPP (Port 631 / Local Network)" },
-                { value: "ha_service", label: "Home Assistant Service Bridge" },
-                { value: "gateway", label: "Dedicated Print Gateway URL" },
-                { value: "os_print", label: "OS Native Print Dialog (Universal Fallback)" }
-              ]
-            }
-          }
-        },
-        {
-          name: "gateway_url",
-          label: "Gateway URL (Optional, if using dedicated print service)",
-          selector: { text: {} }
-        }
-      ]
+      name: "enable_printing",
+      label: "Enable Printing Feature (Header Button & History)",
+      selector: { boolean: {} }
     },
     {
-      type: "expandable",
-      name: "canvas_settings",
-      title: "Canvas & Output Settings",
-      icon: "mdi:palette-swatch-outline",
-      schema: [
-        {
-          name: "paper_size",
-          label: "Default Paper Format (300 DPI Auto-fit)",
-          selector: {
-            select: {
-              options: [
-                { value: "a4", label: "A4 (210 x 297 mm)" },
-                { value: "a3", label: "A3 (297 x 420 mm)" },
-                { value: "letter", label: "Letter (8.5 x 11 in)" },
-                { value: "thermal80", label: "Thermal Receipt (80 mm roll)" },
-                { value: "fit", label: "Fit Content (1:1 Bounding Box)" }
-              ]
-            }
-          }
-        },
-        {
-          name: "canvas_bg",
-          label: "Canvas Background Style",
-          selector: {
-            select: {
-              options: [
-                { value: "grid", label: "Engineering Grid (Light Blue)" },
-                { value: "blank", label: "Clean Pure White" },
-                { value: "dots", label: "Dot Matrix" }
-              ]
-            }
-          }
-        },
-        {
-          name: "height",
-          label: "Card Height (px)",
-          selector: { number: { min: 350, max: 1200, step: 20, mode: "slider" } }
-        },
-        {
-          name: "confirm_discard",
-          label: "Confirm before Discarding Current Drawing",
-          selector: { boolean: {} }
+      name: "printer_ip",
+      label: "Printer IP Address or Hostname (e.g. 192.168.1.100)",
+      selector: { text: {} }
+    },
+    {
+      name: "printer_port",
+      label: "Printer Port (Default: 631 for IPP)",
+      selector: { number: { min: 1, max: 65535, mode: "box" } }
+    },
+    {
+      name: "print_mode",
+      label: "Printing Protocol / Dispatch Mode",
+      selector: {
+        select: {
+          mode: "dropdown",
+          options: [
+            { value: "ipp", label: "Direct IPP (Port 631 / Local Network)" },
+            { value: "ha_service", label: "Home Assistant Service Bridge" },
+            { value: "gateway", label: "Dedicated Print Gateway URL" },
+            { value: "os_print", label: "OS Native Print Dialog (Universal Fallback)" }
+          ]
         }
-      ]
+      }
+    },
+    {
+      name: "gateway_url",
+      label: "Gateway URL (Optional, if using dedicated print service)",
+      selector: { text: {} }
+    },
+    {
+      name: "canvas_bg",
+      label: "Canvas Background Style",
+      selector: {
+        select: {
+          mode: "dropdown",
+          options: [
+            { value: "grid", label: "Engineering Grid (Light Blue)" },
+            { value: "blank", label: "Clean Pure White" },
+            { value: "dots", label: "Dot Matrix" }
+          ]
+        }
+      }
+    },
+    {
+      name: "height",
+      label: "Card Viewport Height (px)",
+      selector: { number: { min: 350, max: 1200, step: 20, mode: "slider" } }
+    },
+    {
+      name: "max_history_items",
+      label: "Max History Drawings to Retain (Default: 30, Max: 100)",
+      selector: { number: { min: 5, max: 100, step: 5, mode: "slider" } }
+    },
+    {
+      name: "sync_channel",
+      label: "Multi-Terminal Sync Channel Name",
+      selector: { text: {} }
+    },
+    {
+      name: "enable_sync",
+      label: "Enable Real-Time Multi-Terminal Sync",
+      selector: { boolean: {} }
+    },
+    {
+      name: "confirm_discard",
+      label: "Confirm before Discarding Current Drawing",
+      selector: { boolean: {} }
     }
   ];
 
-  class CanvasCardEditor extends HTMLElement {
+  class WhiteboardCanvasCardEditor extends HTMLElement {
     constructor() {
       super();
       this.attachShadow({ mode: "open" });
     }
 
     setConfig(config) {
-      this._config = { ...config };
+      const pSettings = config.printer_settings || {};
+      const cSettings = config.canvas_settings || {};
+
+      const enablePrinting = (config.enable_printing !== undefined)
+        ? Boolean(config.enable_printing)
+        : (pSettings.enable_printing !== undefined ? Boolean(pSettings.enable_printing) : false);
+
+      this._config = {
+        ...DEFAULT_CONFIG,
+        ...config,
+        enable_printing: enablePrinting,
+        printer_ip: config.printer_ip !== undefined ? config.printer_ip : (pSettings.printer_ip || ""),
+        printer_port: config.printer_port !== undefined ? config.printer_port : (pSettings.printer_port || 631),
+        print_mode: config.print_mode !== undefined ? config.print_mode : (pSettings.print_mode || "ipp"),
+        gateway_url: config.gateway_url !== undefined ? config.gateway_url : (pSettings.gateway_url || ""),
+        canvas_bg: config.canvas_bg !== undefined ? config.canvas_bg : (cSettings.canvas_bg || "grid"),
+        height: config.height !== undefined ? config.height : (cSettings.height || 560),
+        max_history_items: Number(config.max_history_items ?? cSettings.max_history_items ?? 30),
+        sync_channel: String(config.sync_channel ?? cSettings.sync_channel ?? "canvas_studio").trim(),
+        enable_sync: config.enable_sync !== undefined ? Boolean(config.enable_sync) : true,
+        confirm_discard: config.confirm_discard !== undefined ? config.confirm_discard : (cSettings.confirm_discard !== undefined ? cSettings.confirm_discard : true)
+      };
+
       this.render();
     }
 
@@ -2103,8 +3477,12 @@
         this._form.schema = EDITOR_SCHEMA;
         this._form.computeLabel = (s) => s.label || s.name;
         this._form.addEventListener("value-changed", (ev) => {
+          const newConfig = { ...ev.detail.value };
+          newConfig.enable_printing = Boolean(newConfig.enable_printing);
+          newConfig.enable_sync = newConfig.enable_sync !== undefined ? Boolean(newConfig.enable_sync) : true;
+          newConfig.max_history_items = Number(newConfig.max_history_items) || 30;
           const event = new CustomEvent("config-changed", {
-            detail: { config: ev.detail.value },
+            detail: { config: newConfig },
             bubbles: true,
             composed: true
           });
@@ -2115,22 +3493,34 @@
     }
   }
 
-  // Register Elements
-  customElements.define("canvas-card-editor", CanvasCardEditor);
-  customElements.define("canvas-card", CanvasCard);
+  // Register Primary Custom Elements (whiteboard-canvas-card)
+  if (!customElements.get("whiteboard-canvas-card-editor")) {
+    customElements.define("whiteboard-canvas-card-editor", WhiteboardCanvasCardEditor);
+  }
+  if (!customElements.get("whiteboard-canvas-card")) {
+    customElements.define("whiteboard-canvas-card", WhiteboardCanvasCard);
+  }
 
-  // Register Lovelace Card Picker
+  // Backward-compatible alias registration for legacy "canvas-card"
+  if (!customElements.get("canvas-card-editor")) {
+    customElements.define("canvas-card-editor", class extends WhiteboardCanvasCardEditor {});
+  }
+  if (!customElements.get("canvas-card")) {
+    customElements.define("canvas-card", class extends WhiteboardCanvasCard {});
+  }
+
+  // Register Lovelace Card Picker Entry
   window.customCards = window.customCards || [];
   window.customCards.push({
-    type: "canvas-card",
-    name: "Canvas Card",
-    description: "An infinite-canvas drawing & 300 DPI printing card with draggable text box, history, and multi-tier network printing.",
+    type: "whiteboard-canvas-card",
+    name: "Whiteboard Canvas Card",
+    description: "An infinite-canvas whiteboard drawing & 300 DPI printing card with multi-device real-time sync, per-device undo/redo, mobile zoom pod, interactive framing, history, and network printing.",
     preview: true,
-    documentationURL: "https://github.com/lucayunxiao/canvas-card"
+    documentationURL: "https://github.com/lucayunxiao/whiteboard-canvas-card"
   });
 
   console.info(
-    `%c CANVAS-CARD %c v${CARD_VERSION} `,
+    `%c WHITEBOARD-CANVAS-CARD %c v${CARD_VERSION} `,
     "background: #2563eb; color: #fff; font-weight: 700; border-radius: 3px 0 0 3px;",
     "background: #0f172a; color: #fff; font-weight: 700; border-radius: 0 3px 3px 0;"
   );
