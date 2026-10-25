@@ -1,0 +1,140 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 480" width="100%" height="100%">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#090d16"/>
+      <stop offset="50%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#090d16"/>
+    </linearGradient>
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="blueGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#60a5fa"/>
+      <stop offset="100%" stop-color="#2563eb"/>
+    </linearGradient>
+    <linearGradient id="emeraldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#059669"/>
+    </linearGradient>
+    <filter id="cardShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#000000" flood-opacity="0.5"/>
+    </filter>
+  </defs>
+
+  <!-- Background Canvas Grid -->
+  <rect width="1000" height="480" fill="url(#bgGrad)"/>
+  
+  <!-- Subtle decorative engineering grid -->
+  <g opacity="0.08" stroke="#38bdf8" stroke-width="1">
+    <path d="M0,40 H1000 M0,80 H1000 M0,120 H1000 M0,160 H1000 M0,200 H1000 M0,240 H1000 M0,280 H1000 M0,320 H1000 M0,360 H1000 M0,400 H1000 M0,440 H1000"/>
+    <path d="M40,0 V480 M80,0 V480 M120,0 V480 M160,0 V480 M200,0 V480 M240,0 V480 M280,0 V480 M320,0 V480 M360,0 V480 M400,0 V480 M440,0 V480 M480,0 V480 M520,0 V480 M560,0 V480 M600,0 V480 M640,0 V480 M680,0 V480 M720,0 V480 M760,0 V480 M800,0 V480 M840,0 V480 M880,0 V480 M920,0 V480 M960,0 V480"/>
+  </g>
+
+  <!-- Title & Badge Section -->
+  <g transform="translate(60, 55)">
+    <!-- Brand Icon -->
+    <rect width="44" height="44" rx="10" fill="url(#blueGrad)"/>
+    <path d="M12,32 L20,32 L31,21 L23,13 L12,24 Z M25,11 L29,7 C30,6 32,6 33,7 L37,11 C38,12 38,14 37,15 L33,19 Z" fill="#ffffff" transform="translate(0, 0) scale(0.9) translate(3, 3)"/>
+    
+    <text x="56" y="26" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif" font-size="26" font-weight="800" fill="#ffffff" letter-spacing="-0.5">Canvas Card</text>
+    <text x="56" y="44" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif" font-size="13" font-weight="500" fill="#94a3b8">Infinite Drawing &amp; 300 DPI Printing Card for Home Assistant Lovelace</text>
+  </g>
+
+  <!-- Left Mockup: Canvas Card UI Simulation -->
+  <g transform="translate(60, 125)" filter="url(#cardShadow)">
+    <rect width="480" height="310" rx="14" fill="url(#cardGrad)" stroke="#334155" stroke-width="1.5"/>
+    
+    <!-- Card Header -->
+    <rect width="480" height="44" rx="14" fill="#1e293b"/>
+    <rect y="30" width="480" height="14" fill="#1e293b"/>
+    <circle cx="24" cy="22" r="5" fill="#ef4444"/>
+    <circle cx="38" cy="22" r="5" fill="#f59e0b"/>
+    <circle cx="52" cy="22" r="5" fill="#10b981"/>
+    <text x="75" y="26" font-family="sans-serif" font-size="12" font-weight="700" fill="#f8fafc">Canvas Studio</text>
+    
+    <!-- Action Pills in Simulation -->
+    <rect x="235" y="10" width="70" height="24" rx="6" fill="#2563eb"/>
+    <text x="245" y="26" font-family="sans-serif" font-size="10" font-weight="700" fill="#ffffff">Save + New</text>
+    
+    <rect x="312" y="10" width="74" height="24" rx="6" fill="#ef4444" fill-opacity="0.15" stroke="#ef4444" stroke-width="1"/>
+    <text x="320" y="26" font-family="sans-serif" font-size="10" font-weight="700" fill="#ef4444">Discard + New</text>
+
+    <rect x="393" y="10" width="72" height="24" rx="6" fill="#10b981"/>
+    <text x="403" y="26" font-family="sans-serif" font-size="10" font-weight="700" fill="#ffffff">Print + New</text>
+
+    <!-- Toolbar Strip -->
+    <rect y="44" width="480" height="34" fill="#0f172a" fill-opacity="0.6"/>
+    <!-- Simulated Tool Icons -->
+    <circle cx="26" cy="61" r="11" fill="#2563eb" fill-opacity="0.3"/>
+    <circle cx="26" cy="61" r="5" fill="#60a5fa"/>
+    <circle cx="52" cy="61" r="5" fill="#94a3b8"/>
+    <circle cx="78" cy="61" r="5" fill="#94a3b8"/>
+    <rect x="98" y="52" width="1" height="18" fill="#334155"/>
+    <circle cx="120" cy="61" r="3" fill="#ffffff"/>
+    <circle cx="138" cy="61" r="5" fill="#2563eb"/>
+    <circle cx="160" cy="61" r="7" fill="#ffffff"/>
+
+    <!-- Simulated White Canvas Sheet Area -->
+    <rect x="16" y="88" width="448" height="206" rx="8" fill="#ffffff"/>
+    <!-- Subtle Grid inside Sheet -->
+    <g stroke="#3b82f6" stroke-width="0.8" opacity="0.2">
+      <path d="M16,114 H464 M16,140 H464 M16,166 H464 M16,192 H464 M16,218 H464 M16,244 H464 M16,270 H464"/>
+      <path d="M42,88 V294 M68,88 V294 M94,88 V294 M120,88 V294 M146,88 V294 M172,88 V294 M198,88 V294 M224,88 V294 M250,88 V294 M276,88 V294 M302,88 V294 M328,88 V294 M354,88 V294 M380,88 V294 M406,88 V294 M432,88 V294"/>
+    </g>
+
+    <!-- Smooth Hand-Drawn Stroke Simulation -->
+    <path d="M50,210 Q80,120 130,170 T210,130 Q250,220 300,160" fill="none" stroke="#2563eb" stroke-width="4.5" stroke-linecap="round"/>
+    <path d="M70,240 C110,230 140,250 180,235" fill="none" stroke="#ef4444" stroke-width="3" stroke-linecap="round"/>
+
+    <!-- Draggable Text Box Simulation -->
+    <g transform="translate(195, 120)">
+      <rect width="180" height="66" rx="6" fill="#0f172a" fill-opacity="0.94" stroke="#475569" stroke-width="1"/>
+      <rect x="4" y="4" width="172" height="18" rx="4" fill="#1e293b"/>
+      <text x="10" y="16" font-family="sans-serif" font-size="9" font-weight="700" fill="#94a3b8">⠿ Drag to move</text>
+      <rect x="135" y="6" width="36" height="14" rx="3" fill="#16a34a"/>
+      <text x="142" y="16" font-family="sans-serif" font-size="8" font-weight="700" fill="#ffffff">✓ Done</text>
+      <text x="10" y="38" font-family="sans-serif" font-size="12" font-weight="700" fill="#38bdf8">Epson ET-5150</text>
+      <text x="10" y="52" font-family="sans-serif" font-size="9" fill="#94a3b8">300 DPI Ultra HD Print</text>
+    </g>
+  </g>
+
+  <!-- Right Section: Feature Pillars -->
+  <g transform="translate(575, 125)">
+    <!-- Pillar 1: Infinite Canvas -->
+    <g transform="translate(0, 0)">
+      <rect width="365" height="66" rx="10" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+      <circle cx="32" cy="33" r="16" fill="#2563eb" fill-opacity="0.2"/>
+      <text x="32" y="38" text-anchor="middle" font-family="sans-serif" font-size="15" fill="#60a5fa">∞</text>
+      <text x="60" y="27" font-family="sans-serif" font-size="13" font-weight="700" fill="#ffffff">Infinite Canvas &amp; Smooth Bézier</text>
+      <text x="60" y="46" font-family="sans-serif" font-size="11" fill="#94a3b8">Pinch-to-zoom (0.5x–5x), pan &amp; anti-aliased strokes</text>
+    </g>
+
+    <!-- Pillar 2: Draggable Text Box -->
+    <g transform="translate(0, 80)">
+      <rect width="365" height="66" rx="10" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+      <circle cx="32" cy="33" r="16" fill="#f59e0b" fill-opacity="0.2"/>
+      <text x="32" y="38" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#fbbf24">T</text>
+      <text x="60" y="27" font-family="sans-serif" font-size="13" font-weight="700" fill="#ffffff">Inline Draggable Text Box</text>
+      <text x="60" y="46" font-family="sans-serif" font-size="11" fill="#94a3b8">Zero-drift scale drag, 4 font sizes &amp; IME flush safe</text>
+    </g>
+
+    <!-- Pillar 3: 300 DPI Physical Auto-Fit -->
+    <g transform="translate(0, 160)">
+      <rect width="365" height="66" rx="10" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+      <circle cx="32" cy="33" r="16" fill="#10b981" fill-opacity="0.2"/>
+      <text x="32" y="38" text-anchor="middle" font-family="sans-serif" font-size="14" fill="#34d399">🖨</text>
+      <text x="60" y="27" font-family="sans-serif" font-size="13" font-weight="700" fill="#ffffff">300 DPI Auto-Fit &amp; Paper Scaling</text>
+      <text x="60" y="46" font-family="sans-serif" font-size="11" fill="#94a3b8">Content bounding box scaled to A4, A3, or Letter</text>
+    </g>
+
+    <!-- Pillar 4: Multi-tier Print Engine -->
+    <g transform="translate(0, 240)">
+      <rect width="365" height="66" rx="10" fill="#1e293b" stroke="#334155" stroke-width="1"/>
+      <circle cx="32" cy="33" r="16" fill="#8b5cf6" fill-opacity="0.2"/>
+      <text x="32" y="38" text-anchor="middle" font-family="sans-serif" font-size="13" fill="#a78bfa">⚡</text>
+      <text x="60" y="27" font-family="sans-serif" font-size="13" font-weight="700" fill="#ffffff">Direct IPP, HA Bridge &amp; OS Print</text>
+      <text x="60" y="46" font-family="sans-serif" font-size="11" fill="#94a3b8">Works with Epson, HP, Canon, Brother &amp; Thermal</text>
+    </g>
+  </g>
+</svg>
