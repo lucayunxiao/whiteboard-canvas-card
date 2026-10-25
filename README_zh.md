@@ -166,6 +166,20 @@ max_history_items: 50
 height: 600
 ```
 
+#### 推荐配套：Home Assistant 后端 IPP/IPPS 桥接配置 (`configuration.yaml`)
+由于现代浏览器会拦截前端网页向局域网打印机发起的跨域请求 (`CORS`) 以及打印机自签名 TLS 证书（例如 Epson/HP 等机型在 631 端口强制要求 `IPPS` 并返回 `HTTP 426 Upgrade Required`），只需在 Home Assistant 的 `configuration.yaml` 中添加以下免外部依赖的 `shell_command`，即可让 **`Direct IPP`** 和 **`HA Service Bridge`** 模式通过 HA 后端直接向任意局域网打印机发送标准 RFC 8011 二进制 IPP 打印任务：
+
+```yaml
+shell_command:
+  whiteboard_ipp_print: >-
+    python3 -c 'import sys,base64,ssl,urllib.request as u;
+    ip,pt=sys.argv[1],sys.argv[2];
+    d=base64.b64decode("".join(sys.argv[3:]));
+    ctx=ssl._create_unverified_context();
+    req=lambda s:u.urlopen(u.Request(f"{s}://{ip}:{pt}/ipp/print",data=d,headers={"Content-Type":"application/ipp"}),context=ctx if s=="https" else None,timeout=25).read();
+    exec("try:\n b=req(\"https\")\nexcept Exception:\n b=req(\"http\")\nif len(b)>=4 and ((b[2]<<8)|b[3])>255:raise RuntimeError(f\"IPP error 0x{(b[2]<<8)|b[3]:04x}\")")' "{{ printer_ip }}" "{{ printer_port }}" "{{ c0 }}" "{{ c1 }}" "{{ c2 }}" "{{ c3 }}" "{{ c4 }}" "{{ c5 }}"
+```
+
 ---
 
 ## 🤝 官方 HACS 默认商店收录指南 (Include in Default)

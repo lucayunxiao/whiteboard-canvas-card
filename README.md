@@ -166,6 +166,20 @@ max_history_items: 50
 height: 600
 ```
 
+#### Optional: Home Assistant IPP/IPPS Backend Bridge (`configuration.yaml`)
+Because modern browsers block cross-origin requests (`CORS`) and self-signed printer TLS certificates (`IPPS` / `HTTP 426 Upgrade Required` on port 631), adding this single zero-dependency `shell_command` to your Home Assistant `configuration.yaml` allows **both `Direct IPP` and `HA Service Bridge` modes** to send raw RFC 8011 binary IPP `Print-Job` packets directly from your Home Assistant backend to any network printer:
+
+```yaml
+shell_command:
+  whiteboard_ipp_print: >-
+    python3 -c 'import sys,base64,ssl,urllib.request as u;
+    ip,pt=sys.argv[1],sys.argv[2];
+    d=base64.b64decode("".join(sys.argv[3:]));
+    ctx=ssl._create_unverified_context();
+    req=lambda s:u.urlopen(u.Request(f"{s}://{ip}:{pt}/ipp/print",data=d,headers={"Content-Type":"application/ipp"}),context=ctx if s=="https" else None,timeout=25).read();
+    exec("try:\n b=req(\"https\")\nexcept Exception:\n b=req(\"http\")\nif len(b)>=4 and ((b[2]<<8)|b[3])>255:raise RuntimeError(f\"IPP error 0x{(b[2]<<8)|b[3]:04x}\")")' "{{ printer_ip }}" "{{ printer_port }}" "{{ c0 }}" "{{ c1 }}" "{{ c2 }}" "{{ c3 }}" "{{ c4 }}" "{{ c5 }}"
+```
+
 ---
 
 ## 🤝 HACS Default Repository Submission Guide

@@ -28,7 +28,7 @@
   // Prevent duplicate registration
   if (customElements.get("whiteboard-canvas-card")) return;
 
-  const CARD_VERSION = "1.1.0";
+  const CARD_VERSION = "1.1.1";
   const DB_NAME = "CanvasCardDB";
   const DB_VERSION = 1;
   const STORE_NAME = "history";
@@ -2909,10 +2909,17 @@
           outCtx.putImageData(imgData, 0, 0);
         }
 
+        let jpegDataUrl = outCanvas.toDataURL("image/jpeg", 0.88);
+        if (jpegDataUrl.length > 420000) {
+          jpegDataUrl = outCanvas.toDataURL("image/jpeg", 0.72);
+        }
+
         const rasterResult = {
-          dataUrl: outCanvas.toDataURL("image/jpeg", 0.94),
+          dataUrl: jpegDataUrl,
           rawDrawDataUrl: this.drawCanvas.toDataURL("image/png"),
-          paperSize: paper.name
+          paperSize: paper.name,
+          paperKey: selectPaper.value || "a4",
+          colorMode
         };
 
         await this.dispatchPrint(rasterResult);
@@ -2925,52 +2932,173 @@
         }, this._config.max_history_items || 30);
 
         this.clearCanvas(true);
-        this.showToast("Print dispatched & canvas archived!");
       };
 
       btnConfirm.onclick = executePrint;
     }
 
     // =========================================================================
-    // Multi-tier Printing Engine
+    // RFC 8011 Binary IPP Packet Builder & Multi-tier Printing Engine
     // =========================================================================
+    buildIppPrintJobPayload(dataUrl, printerIp, printerPort = 631, paperKey = "a4", colorMode = "color") {
+      const b64Raw = dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl;
+      const binStr = atob(b64Raw);
+      const jpegBytes = new Uint8Array(binStr.length);
+      for (let i = 0; i < binStr.length; i++) {
+        jpegBytes[i] = binStr.charCodeAt(i);
+      }
+
+      const mediaMap = {
+        a4: "iso_a4_210x297mm",
+        a5: "iso_a5_148x210mm",
+        a3: "iso_a3_297x420mm",
+        letter: "na_letter_8.5x11in",
+        thermal80: "roll_max_80x3276mm"
+      };
+      const ippMedia = mediaMap[paperKey] || "iso_a4_210x297mm";
+      const ippColor = colorMode === "monochrome" ? "monochrome" : "color";
+      const printerUri = `ipp://${printerIp}:${printerPort || 631}/ipp/print`;
+
+      const enc = new TextEncoder();
+      const encodeAttr = (tag, name, value) => {
+        const nb = enc.encode(name);
+        const vb = enc.encode(value);
+        const out = new Uint8Array(1 + 2 + nb.length + 2 + vb.length);
+        let o = 0;
+        out[o++] = tag;
+        out[o++] = (nb.length >> 8) & 0xff;
+        out[o++] = nb.length & 0xff;
+        out.set(nb, o);
+        o += nb.length;
+        out[o++] = (vb.length >> 8) & 0xff;
+        out[o++] = vb.length & 0xff;
+        out.set(vb, o);
+        return out;
+      };
+
+      // IPP v2.0, Operation 0x0002 (Print-Job), Request-ID 1, Operation-Attributes-Tag 0x01
+      const header = new Uint8Array([0x02, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0x01]);
+      const parts = [
+        header,
+        encodeAttr(0x47, "attributes-charset", "utf-8"),
+        encodeAttr(0x48, "attributes-natural-language", "en"),
+        encodeAttr(0x45, "printer-uri", printerUri),
+        encodeAttr(0x42, "requesting-user-name", "HomeAssistant"),
+        encodeAttr(0x42, "job-name", "Whiteboard-Canvas-Print"),
+        encodeAttr(0x49, "document-format", "image/jpeg"),
+        new Uint8Array([0x02]), // Job-Attributes-Tag
+        encodeAttr(0x44, "media", ippMedia),
+        encodeAttr(0x44, "print-color-mode", ippColor),
+        new Uint8Array([0x03]), // End-of-Attributes-Tag
+        jpegBytes
+      ];
+
+      let totalLen = 0;
+      for (const p of parts) totalLen += p.length;
+      const ippBytes = new Uint8Array(totalLen);
+      let offset = 0;
+      for (const p of parts) {
+        ippBytes.set(p, offset);
+        offset += p.length;
+      }
+
+      // Convert complete IPP binary packet to Base64 in 32KB chunks
+      let ippBinStr = "";
+      const step = 0x8000;
+      for (let i = 0; i < ippBytes.length; i += step) {
+        ippBinStr += String.fromCharCode.apply(null, ippBytes.subarray(i, i + step));
+      }
+      const ippBase64 = btoa(ippBinStr);
+      return { ippBytes, ippBase64 };
+    }
+
+    async dispatchViaHaIppBridge(ippBase64, printerIp, printerPort = 631) {
+      if (!this._hass || !this._hass.services?.shell_command?.whiteboard_ipp_print) {
+        return false;
+      }
+      const chunkSize = 85000;
+      const chunks = ["", "", "", "", "", ""];
+      for (let i = 0; i < 6; i++) {
+        chunks[i] = ippBase64.slice(i * chunkSize, (i + 1) * chunkSize) || "";
+      }
+      await this._hass.callService("shell_command", "whiteboard_ipp_print", {
+        printer_ip: String(printerIp).trim(),
+        printer_port: Number(printerPort) || 631,
+        c0: chunks[0],
+        c1: chunks[1],
+        c2: chunks[2],
+        c3: chunks[3],
+        c4: chunks[4],
+        c5: chunks[5]
+      });
+      return true;
+    }
+
     async dispatchPrint(rasterResult) {
       const mode = this._config.print_mode || "ipp";
-      const printerIp = this._config.printer_ip;
+      const printerIp = (this._config.printer_ip || "").trim();
+      const printerPort = Number(this._config.printer_port) || 631;
+      const paperKey = rasterResult.paperKey || "a4";
+      const colorMode = rasterResult.colorMode || "color";
 
-      // 1. Direct IPP (Port 631)
+      // 1. Direct IPP (Port 631) - Builds RFC 8011 binary IPP packet, attempts direct fetch, and seamlessly bridges via HA if browser CORS/TLS blocks it
       if (mode === "ipp" && printerIp) {
-        try {
-          const url = `http://${printerIp}:${this._config.printer_port || 631}/ipp/print`;
-          const res = await fetch(rasterResult.dataUrl);
-          const blob = await res.blob();
+        const { ippBytes, ippBase64 } = this.buildIppPrintJobPayload(
+          rasterResult.dataUrl,
+          printerIp,
+          printerPort,
+          paperKey,
+          colorMode
+        );
 
+        // If Home Assistant IPP bridge service is registered, use it first when on HTTPS or after direct attempt
+        try {
+          const url = `http://${printerIp}:${printerPort}/ipp/print`;
           const response = await fetch(url, {
             method: "POST",
-            headers: { "Content-Type": "image/jpeg" },
-            body: blob
+            headers: { "Content-Type": "application/ipp" },
+            body: ippBytes
           });
           if (response.ok) {
-            this.showToast("Print job dispatched to printer!");
+            this.showToast("Print job dispatched via Direct IPP!");
             return true;
           }
         } catch (err) {
-          console.warn("Direct IPP dispatch blocked (CORS/Mixed Content). Falling back to OS Print...", err);
+          console.info("Browser Direct IPP blocked by CORS/IPPS, routing via HA IPP Bridge...", err);
+        }
+
+        try {
+          const bridged = await this.dispatchViaHaIppBridge(ippBase64, printerIp, printerPort);
+          if (bridged) {
+            this.showToast(`Print job sent to ${printerIp} via HA IPP Bridge!`);
+            return true;
+          }
+        } catch (bridgeErr) {
+          console.error("HA IPP Bridge failed:", bridgeErr);
         }
       }
 
       // 2. HA Service Bridge
       if (mode === "ha_service" && this._hass) {
-        try {
-          await this._hass.callService("notify", "persistent_notification", {
-            title: "Canvas Print Task",
-            message: `Print task prepared for ${printerIp || "Default Printer"} (${rasterResult.paperSize}).`
-          });
-          this.showToast("Print task forwarded to Home Assistant!");
-          return true;
-        } catch (err) {
-          console.error("HA Service call failed:", err);
+        if (printerIp) {
+          try {
+            const { ippBase64 } = this.buildIppPrintJobPayload(
+              rasterResult.dataUrl,
+              printerIp,
+              printerPort,
+              paperKey,
+              colorMode
+            );
+            const bridged = await this.dispatchViaHaIppBridge(ippBase64, printerIp, printerPort);
+            if (bridged) {
+              this.showToast(`Print job dispatched to ${printerIp} via HA Bridge!`);
+              return true;
+            }
+          } catch (err) {
+            console.error("HA Service IPP Bridge call failed:", err);
+          }
         }
+        this.showToast("HA IPP Bridge requires printer_ip & shell_command.whiteboard_ipp_print. Falling back to OS Print...");
       }
 
       // 3. Dedicated Gateway
@@ -2993,34 +3121,86 @@
         }
       }
 
-      // 4. Universal Fallback: OS System Print Dialog
-      return this.triggerOSPrint(rasterResult.dataUrl);
+      // 4. Universal Fallback: OS System Print Dialog (Popup-blocker-free Hidden Iframe)
+      return this.triggerOSPrint(rasterResult.dataUrl, rasterResult.paperSize);
     }
 
-    triggerOSPrint(imageUrl) {
-      const printWin = window.open("", "_blank");
-      if (!printWin) {
-        this.showToast("Please allow pop-ups for printing");
+    triggerOSPrint(imageUrl, paperSize = "A4 Portrait") {
+      const isLandscape = String(paperSize || "").toLowerCase().includes("landscape");
+      const existingFrame = document.getElementById("whiteboardPrintIframe");
+      if (existingFrame) {
+        existingFrame.remove();
+      }
+
+      const iframe = document.createElement("iframe");
+      iframe.id = "whiteboardPrintIframe";
+      iframe.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;opacity:0;pointer-events:none;z-index:-1;";
+      document.body.appendChild(iframe);
+
+      const doc = iframe.contentWindow?.document || iframe.contentDocument;
+      if (!doc) {
+        this.showToast("Unable to initialize print frame");
         return false;
       }
-      printWin.document.write(`
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <title>Print Document</title>
-          <style>
-            @page { size: auto; margin: 0; }
-            body { margin: 0; display: flex; align-items: center; justify-content: center; background: #fff; }
-            img { width: 100%; height: auto; max-height: 100vh; object-fit: contain; }
-          </style>
-        </head>
-        <body>
-          <img src="${imageUrl}" onload="window.print(); window.close();" />
-        </body>
-        </html>
-      `);
-      printWin.document.close();
-      this.showToast("Print preview ready");
+
+      doc.open();
+      doc.write(`<!DOCTYPE html>
+<html>
+<head>
+  <title>Whiteboard Print</title>
+  <style>
+    @page { size: ${isLandscape ? "landscape" : "portrait"}; margin: 0mm; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background: #ffffff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    img {
+      max-width: 100vw;
+      max-height: 100vh;
+      width: auto;
+      height: auto;
+      object-fit: contain;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <img id="printTargetImg" src="${imageUrl}" alt="Print Document" />
+</body>
+</html>`);
+      doc.close();
+
+      const img = doc.getElementById("printTargetImg");
+      let triggered = false;
+      const invokePrint = () => {
+        if (triggered) return;
+        triggered = true;
+        setTimeout(() => {
+          try {
+            iframe.contentWindow.focus();
+            iframe.contentWindow.print();
+          } catch (err) {
+            console.error("System print dialog failed:", err);
+          }
+        }, 200);
+      };
+
+      if (img && img.complete) {
+        invokePrint();
+      } else if (img) {
+        img.onload = invokePrint;
+      } else {
+        invokePrint();
+      }
+
+      this.showToast("Opening system print dialog...");
       return true;
     }
 
