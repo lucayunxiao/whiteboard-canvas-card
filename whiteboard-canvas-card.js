@@ -28,7 +28,7 @@
   // Prevent duplicate registration
   if (customElements.get("whiteboard-canvas-card")) return;
 
-  const CARD_VERSION = "1.1.1";
+  const CARD_VERSION = "1.1.2";
   const DB_NAME = "CanvasCardDB";
   const DB_VERSION = 1;
   const STORE_NAME = "history";
@@ -561,7 +561,7 @@
           .viewport {
             position: relative;
             width: 100%;
-            height: ${this._config.height || 560}px;
+            height: ${Number(this._config.height) || 560}px;
             overflow: hidden;
             background-color: #ffffff;
             touch-action: none;
@@ -1143,11 +1143,11 @@
             <div class="header-left">
               <h2 class="header-title">
                 <ha-icon icon="mdi:draw"></ha-icon>
-                <span id="titleText">${this._config.title || "Canvas Studio"}</span>
+                <span id="titleText"></span>
               </h2>
-              <div class="printer-pill ${this._config.printer_ip ? "" : "offline"}" id="printerBadge" style="display: ${isPrint ? "flex" : "none"};">
+              <div class="printer-pill offline" id="printerBadge" style="display: ${isPrint ? "flex" : "none"};">
                 <ha-icon icon="mdi:printer"></ha-icon>
-                <span id="printerStatusText">${this._config.printer_ip ? this._config.printer_ip : "OS Print"}</span>
+                <span id="printerStatusText"></span>
               </div>
             </div>
 
@@ -1385,6 +1385,7 @@
 
       this.initCanvasEngine();
       this.bindUIEvents();
+      this._updateConfigBindings();
     }
 
     // =========================================================================

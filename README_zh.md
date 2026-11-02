@@ -107,19 +107,26 @@
 ### 方式 1：通过 HACS 安装（推荐）
 
 1. 在 Home Assistant 中打开 **HACS**；
-2. 点击右上角三个点 $\to$ **自定义代码库 (Custom repositories)**；
-3. 输入仓库地址：`https://github.com/lucayunxiao/whiteboard-canvas-card`，类别选择 **Plugin**；
-4. 在应用商店中搜索 `Whiteboard Canvas Card` 并点击 **下载 (Download)**；
-5. 刷新浏览器页面即可。
+2. 进入 **前端 (Frontend)**，点击 **浏览并下载代码库** 并搜索 `Whiteboard Canvas Card`；
+3. 点击 **下载 (Download)** 并刷新浏览器仪表盘页面即可。
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=lucayunxiao&repository=whiteboard-canvas-card&category=plugin)
+
+<details>
+<summary><b>备选：通过自定义存储库添加 (Custom repositories)</b></summary>
+
+如果本地 HACS 索引缓存尚未更新：
+1. 打开 **HACS** $\to$ 点击右上角三个点 $\to$ **自定义代码库 (Custom repositories)**；
+2. 输入仓库地址：`https://github.com/lucayunxiao/whiteboard-canvas-card`，类别选择 **Dashboard / Plugin**；
+3. 搜索 `Whiteboard Canvas Card` 并点击下载。
+</details>
 
 ### 方式 2：手动安装
 
 1. 下载 [`dist/whiteboard-canvas-card.js`](https://raw.githubusercontent.com/lucayunxiao/whiteboard-canvas-card/main/dist/whiteboard-canvas-card.js)；
 2. 将 `whiteboard-canvas-card.js` 复制到 Home Assistant 配置目录下的 `<config>/www/` 中；
 3. 进入 **设置 > 仪表盘 > 右上角三个点 > 资源**；
-4. 点击 **添加资源**，URL 填写 `/local/whiteboard-canvas-card.js?v=1.1.0`，资源类型选择 `JavaScript Module`；
+4. 点击 **添加资源**，URL 填写 `/local/whiteboard-canvas-card.js?v=1.1.2`，资源类型选择 `JavaScript Module`；
 5. 刷新浏览器缓存。
 
 ---

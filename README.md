@@ -107,19 +107,26 @@
 ### Method 1: Via HACS (Recommended)
 
 1. Open **HACS** in your Home Assistant dashboard.
-2. Click the three dots in the top-right corner $\to$ **Custom repositories**.
-3. Add the repository URL: `https://github.com/lucayunxiao/whiteboard-canvas-card` with category **Plugin**.
-4. Search for `Whiteboard Canvas Card` and click **Download**.
-5. Refresh your dashboard page.
+2. Go to **Frontend**, click **Explore & Download Repositories**, and search for `Whiteboard Canvas Card`.
+3. Click **Download** and refresh your dashboard.
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=lucayunxiao&repository=whiteboard-canvas-card&category=plugin)
+
+<details>
+<summary><b>Fallback / Manual Custom Repository Setup</b></summary>
+
+If the card has not yet appeared in your local HACS catalog cache:
+1. Open **HACS** $\to$ Click the top-right menu (three dots) $\to$ **Custom repositories**.
+2. Add `https://github.com/lucayunxiao/whiteboard-canvas-card` with type **Dashboard / Plugin**.
+3. Search for `Whiteboard Canvas Card` and click **Download**.
+</details>
 
 ### Method 2: Manual Installation
 
 1. Download [`dist/whiteboard-canvas-card.js`](https://raw.githubusercontent.com/lucayunxiao/whiteboard-canvas-card/main/dist/whiteboard-canvas-card.js).
 2. Copy `whiteboard-canvas-card.js` into your Home Assistant directory under `<config>/www/`.
 3. In Home Assistant, navigate to **Settings > Dashboards > Resources**.
-4. Click **Add Resource**, set URL to `/local/whiteboard-canvas-card.js?v=1.1.0` and Resource type to `JavaScript Module`.
+4. Click **Add Resource**, set URL to `/local/whiteboard-canvas-card.js?v=1.1.2` and Resource type to `JavaScript Module`.
 5. Refresh your browser cache.
 
 ---
