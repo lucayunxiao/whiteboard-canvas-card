@@ -126,7 +126,7 @@
 1. 下载 [`dist/whiteboard-canvas-card.js`](https://raw.githubusercontent.com/lucayunxiao/whiteboard-canvas-card/main/dist/whiteboard-canvas-card.js)；
 2. 将 `whiteboard-canvas-card.js` 复制到 Home Assistant 配置目录下的 `<config>/www/` 中；
 3. 进入 **设置 > 仪表盘 > 右上角三个点 > 资源**；
-4. 点击 **添加资源**，URL 填写 `/local/whiteboard-canvas-card.js?v=1.1.3`，资源类型选择 `JavaScript Module`；
+4. 点击 **添加资源**，URL 填写 `/local/whiteboard-canvas-card.js?v=1.2.0`，资源类型选择 `JavaScript Module`；
 5. 刷新浏览器缓存。
 
 ---
@@ -172,6 +172,22 @@ confirm_discard: true
 max_history_items: 50
 height: 600
 ```
+
+#### 推荐配套：家庭共享白板与多用户持久化缓存 (`configuration.yaml`)
+在 Home Assistant 中，核心的 WebSocket `fire_event` 默认仅允许**管理员账号**调用。为了让家里的**普通家庭成员账号（非管理员）**也能在手机、平板或墙面中控屏上同屏互动画画，并确保在所有终端关闭后重新打开时**画板内容依然完整保留与自动加载**，建议在 Home Assistant 的 `configuration.yaml` 中添加以下免外部依赖的 `shell_command`：
+
+```yaml
+shell_command:
+  whiteboard_save_channel: >-
+    python3 -c 'import sys,os,base64; ch,parts=sys.argv[1],sys.argv[2:]; os.makedirs("/config/www/whiteboard_cache",exist_ok=True); fpath=f"/config/www/whiteboard_cache/canvas_channel_{ch}.json"; raw="".join(parts).strip(); (os.remove(fpath) if os.path.exists(fpath) else None) if not raw else open(fpath,"wb").write(base64.b64decode(raw))' "{{ channel }}" "{{ c0 }}" "{{ c1 }}" "{{ c2 }}" "{{ c3 }}" "{{ c4 }}" "{{ c5 }}"
+```
+
+> **运行机制与缓存管理说明：**
+> - **按频道独立存储**：画板数据按 `sync_channel` 隔离，持久化保存在 `/config/www/whiteboard_cache/canvas_channel_<channel>.json`（可通过 `/local/whiteboard_cache/canvas_channel_<channel>.json` 访问）。
+> - **自动保存与加载**：落笔画线或输入文字后 1.2 秒自动去抖保存至 HA 后端；任意设备打开卡片时自动读取并渲染当前频道的最新画作。
+> - **普通成员免管理员权限**：Home Assistant 允许所有普通家庭成员账号调用服务（Service Call），家庭成员无障碍同屏互画。
+> - **同屏一键清空**：点击 **清空画板** 时，会自动通知所有在线终端同步重置，并即时删除服务器端的该频道缓存文件。
+> - **手动清理与重置**：您可以随时通过 Samba、SSH、VS Code Server 或 File Editor 进入 Home Assistant 的 `/config/www/whiteboard_cache/` 目录，直接查看或手动删除任意频道的 `.json` 缓存文件进行彻底重置。
 
 #### 推荐配套：Home Assistant 后端 IPP/IPPS 桥接配置 (`configuration.yaml`)
 由于现代浏览器会拦截前端网页向局域网打印机发起的跨域请求 (`CORS`) 以及打印机自签名 TLS 证书（例如 Epson/HP 等机型在 631 端口强制要求 `IPPS` 并返回 `HTTP 426 Upgrade Required`），只需在 Home Assistant 的 `configuration.yaml` 中添加以下免外部依赖的 `shell_command`，即可让 **`Direct IPP`** 和 **`HA Service Bridge`** 模式通过 HA 后端直接向任意局域网打印机发送标准 RFC 8011 二进制 IPP 打印任务：

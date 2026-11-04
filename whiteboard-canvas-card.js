@@ -1,7 +1,7 @@
 /**
  * Whiteboard Canvas Card - Infinite Canvas Drawing & 300 DPI Printing Card for Home Assistant Lovelace
  * Repository: https://github.com/lucayunxiao/whiteboard-canvas-card
- * Version: 1.0.9
+ * Version: 1.2.0
  * License: MIT
  *
  * 100% Pure English UI
@@ -28,7 +28,7 @@
   // Prevent duplicate registration
   if (customElements.get("whiteboard-canvas-card")) return;
 
-  const CARD_VERSION = "1.1.3";
+  const CARD_VERSION = "1.2.0";
   const DB_NAME = "CanvasCardDB";
   const DB_VERSION = 1;
   const STORE_NAME = "history";
@@ -153,6 +153,7 @@
       this.attachShadow({ mode: "open" });
 
       // Configuration state
+      const oldChannel = this._config?.sync_channel;
       this._config = { ...DEFAULT_CONFIG };
 
       // Unique Client ID for multi-terminal sync
@@ -248,13 +249,21 @@
 
       if (this._rendered) {
         this._updateConfigBindings();
+        if (oldChannel && oldChannel !== this._config.sync_channel) {
+          this.initSyncEngine();
+          this.loadServerChannelCache();
+        }
       }
     }
 
     set hass(hass) {
+      const firstHass = !this._hass;
       this._hass = hass;
       if (!this._unsubHassSync && this._rendered) {
         this.setupHassSync();
+      }
+      if (firstHass && this._rendered) {
+        this.loadServerChannelCache();
       }
     }
 
@@ -304,9 +313,23 @@
       if (this._hass) {
         this.setupHassSync();
       }
+      this.loadServerChannelCache();
+      this.startServerCachePolling();
     }
 
     disconnectedCallback() {
+      if (this._saveDebounceTimer) {
+        clearTimeout(this._saveDebounceTimer);
+        this._saveDebounceTimer = null;
+      }
+      if (this._serverPollTimer) {
+        clearInterval(this._serverPollTimer);
+        this._serverPollTimer = null;
+      }
+      if (this._boundVisibilityHandler) {
+        document.removeEventListener("visibilitychange", this._boundVisibilityHandler);
+        this._boundVisibilityHandler = null;
+      }
       if (this._resizeObserver) {
         this._resizeObserver.disconnect();
         this._resizeObserver = null;
@@ -1473,6 +1496,117 @@
       }
     }
 
+    async loadServerChannelCache() {
+      if (!this._config.enable_sync) return;
+      const channel = this._config.sync_channel || "canvas_studio";
+      try {
+        const cacheUrl = `/local/whiteboard_cache/canvas_channel_${encodeURIComponent(channel)}.json?t=${Date.now()}`;
+        const res = await fetch(cacheUrl);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data || !Array.isArray(data.operations)) return;
+
+        const serverTs = Number(data.timestamp) || 0;
+        if (serverTs > (this._serverCacheTimestamp || 0)) {
+          this._serverCacheTimestamp = serverTs;
+          this.operations = [...data.operations];
+          this.redoStack = [];
+          if (data.baseImage) {
+            await this.loadDrawingFromDataUrl(data.baseImage, data.bounds, true);
+          } else {
+            this.redrawAllOperations();
+            this.fitViewportToCenter();
+          }
+          this.notifyHistoryButtons();
+        }
+      } catch (err) {
+        // Fallback gracefully if cache file does not exist yet
+      }
+    }
+
+    startServerCachePolling() {
+      if (this._serverPollTimer) {
+        clearInterval(this._serverPollTimer);
+      }
+      this._serverPollTimer = setInterval(() => {
+        if (document.hidden || this.isDrawing || this.activeTextBox) return;
+        this.loadServerChannelCache();
+      }, 12000);
+
+      if (!this._boundVisibilityHandler) {
+        this._boundVisibilityHandler = () => {
+          if (!document.hidden && !this.isDrawing && !this.activeTextBox) {
+            this.loadServerChannelCache();
+          }
+        };
+        document.addEventListener("visibilitychange", this._boundVisibilityHandler);
+      }
+    }
+
+    scheduleServerSave(debounceMs = 1200) {
+      if (!this._config.enable_sync) return;
+      if (this._saveDebounceTimer) {
+        clearTimeout(this._saveDebounceTimer);
+      }
+      this._saveDebounceTimer = setTimeout(() => {
+        this.saveChannelToServer(false);
+      }, debounceMs);
+    }
+
+    async saveChannelToServer(clear = false) {
+      if (!this._hass || !this._config.enable_sync) return;
+      const channel = this._config.sync_channel || "canvas_studio";
+
+      if (clear) {
+        try {
+          await this._hass.callService("shell_command", "whiteboard_save_channel", {
+            channel,
+            c0: "", c1: "", c2: "", c3: "", c4: "", c5: ""
+          });
+          this._serverCacheTimestamp = Date.now();
+        } catch (err) {
+          console.warn("Failed to clear whiteboard cache on HA server:", err);
+        }
+        return;
+      }
+
+      if (this.operations.length === 0 && !this._baseImageDataUrl) {
+        return;
+      }
+
+      const payload = {
+        channel,
+        timestamp: Date.now(),
+        lastModifiedBy: this.clientId,
+        userName: this._hass?.user?.name || "Anonymous",
+        bounds: this.bounds || null,
+        operations: this.operations,
+        baseImage: this._baseImageDataUrl || null
+      };
+
+      this._serverCacheTimestamp = payload.timestamp;
+
+      try {
+        const jsonStr = JSON.stringify(payload);
+        const bytes = new TextEncoder().encode(jsonStr);
+        let bin = "";
+        for (let i = 0; i < bytes.length; i++) {
+          bin += String.fromCharCode(bytes[i]);
+        }
+        const b64 = btoa(bin);
+
+        const CHUNK_SIZE = 60000;
+        const chunks = { channel };
+        for (let i = 0; i < 6; i++) {
+          chunks[`c${i}`] = b64.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE) || "";
+        }
+
+        await this._hass.callService("shell_command", "whiteboard_save_channel", chunks);
+      } catch (err) {
+        console.warn("Failed to persist whiteboard channel to HA server:", err);
+      }
+    }
+
     broadcastSyncEvent(payload) {
       if (!this._config.enable_sync) return;
       payload.clientId = this.clientId;
@@ -1635,6 +1769,7 @@
         oldest.forEach((k) => this._seenEvents.delete(k));
       }
 
+      this._serverCacheTimestamp = data.timestamp || Date.now();
       if (data.action === "stroke") {
         const op = {
           opId: data.opId || `op_${data.clientId}_${data.timestamp}`,
@@ -2224,6 +2359,7 @@
             action: "stroke",
             ...op
           });
+          this.scheduleServerSave();
         }
         this.currentStrokePoints = [];
       };
@@ -2507,6 +2643,7 @@
           action: "text",
           ...op
         });
+        this.scheduleServerSave();
       }
 
       this.removeActiveTextBox();
@@ -2552,6 +2689,7 @@
           ownerId: this.clientId
         });
       }
+      this.scheduleServerSave();
     }
 
     redo(broadcast = true) {
@@ -2571,6 +2709,7 @@
           ownerId: this.clientId
         });
       }
+      this.scheduleServerSave();
     }
 
     clearCanvas(broadcast = true) {
@@ -2586,6 +2725,7 @@
       if (broadcast) {
         this.broadcastSyncEvent({ action: "clear" });
       }
+      this.saveChannelToServer(true);
     }
 
     notifyHistoryButtons() {
@@ -3314,6 +3454,7 @@
               // Broadcast newly restored drawing to peers
               const payload = this.buildCanvasPatchPayload("sync_state");
               this.broadcastSyncEvent(payload);
+              this.scheduleServerSave();
             } else if (action === "re-print") {
               this.dispatchPrint({ dataUrl: item.thumbnail, paperSize: item.paperSize || "A4" });
             } else if (action === "download") {

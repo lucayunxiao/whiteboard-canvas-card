@@ -126,7 +126,7 @@ If the card has not yet appeared in your local HACS catalog cache:
 1. Download [`dist/whiteboard-canvas-card.js`](https://raw.githubusercontent.com/lucayunxiao/whiteboard-canvas-card/main/dist/whiteboard-canvas-card.js).
 2. Copy `whiteboard-canvas-card.js` into your Home Assistant directory under `<config>/www/`.
 3. In Home Assistant, navigate to **Settings > Dashboards > Resources**.
-4. Click **Add Resource**, set URL to `/local/whiteboard-canvas-card.js?v=1.1.3` and Resource type to `JavaScript Module`.
+4. Click **Add Resource**, set URL to `/local/whiteboard-canvas-card.js?v=1.2.0` and Resource type to `JavaScript Module`.
 5. Refresh your browser cache.
 
 ---
@@ -172,6 +172,22 @@ confirm_discard: true
 max_history_items: 50
 height: 600
 ```
+
+#### Optional but Recommended: Persistent Shared Whiteboard & Multi-User Cache (`configuration.yaml`)
+By default, Home Assistant core restricts WebSocket `fire_event` to **administrator accounts only**. To enable seamless live drawing synchronization across **standard family members (non-admin accounts)** and ensure the whiteboard state is **permanently saved and restored** when refreshing or switching devices (even if no other device is currently online), add this zero-dependency `shell_command` to your `configuration.yaml`:
+
+```yaml
+shell_command:
+  whiteboard_save_channel: >-
+    python3 -c 'import sys,os,base64; ch,parts=sys.argv[1],sys.argv[2:]; os.makedirs("/config/www/whiteboard_cache",exist_ok=True); fpath=f"/config/www/whiteboard_cache/canvas_channel_{ch}.json"; raw="".join(parts).strip(); (os.remove(fpath) if os.path.exists(fpath) else None) if not raw else open(fpath,"wb").write(base64.b64decode(raw))' "{{ channel }}" "{{ c0 }}" "{{ c1 }}" "{{ c2 }}" "{{ c3 }}" "{{ c4 }}" "{{ c5 }}"
+```
+
+> **How it works & Cache Management:**
+> - **Channel Isolation**: Whiteboard data is stored per `sync_channel` at `/config/www/whiteboard_cache/canvas_channel_<channel>.json` (served statically via `/local/whiteboard_cache/canvas_channel_<channel>.json`).
+> - **Auto Save & Restore**: Automatically saves after strokes or text entries (debounced 1.2s) and automatically restores whenever a user or dashboard loads the card.
+> - **Zero Admin Privileges Required**: Standard family accounts can invoke Home Assistant services, allowing every family member on phones or tablets to draw and sync effortlessly.
+> - **Clean Reset**: Clicking **Clear Canvas** resets the board across all screens and immediately deletes the server-side channel cache file.
+> - **Manual Cleanup**: You can inspect, backup, or delete any channel cache file directly in your Home Assistant `/config/www/whiteboard_cache/` directory (via Samba, SSH, Studio Code Server, or File Editor) anytime for a manual reset.
 
 #### Optional: Home Assistant IPP/IPPS Backend Bridge (`configuration.yaml`)
 Because modern browsers block cross-origin requests (`CORS`) and self-signed printer TLS certificates (`IPPS` / `HTTP 426 Upgrade Required` on port 631), adding this single zero-dependency `shell_command` to your Home Assistant `configuration.yaml` allows **both `Direct IPP` and `HA Service Bridge` modes** to send raw RFC 8011 binary IPP `Print-Job` packets directly from your Home Assistant backend to any network printer:
