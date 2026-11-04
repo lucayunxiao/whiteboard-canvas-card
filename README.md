@@ -187,31 +187,6 @@ shell_command:
     exec("try:\n b=req(\"https\")\nexcept Exception:\n b=req(\"http\")\nif len(b)>=4 and ((b[2]<<8)|b[3])>255:raise RuntimeError(f\"IPP error 0x{(b[2]<<8)|b[3]:04x}\")")' "{{ printer_ip }}" "{{ printer_port }}" "{{ c0 }}" "{{ c1 }}" "{{ c2 }}" "{{ c3 }}" "{{ c4 }}" "{{ c5 }}"
 ```
 
----
-
-## 🤝 HACS Default Repository Submission Guide
-
-To submit `whiteboard-canvas-card` to the official [hacs/default](https://github.com/hacs/default) store:
-
-1. **Verify Local Quality**:
-   Ensure `hacs.json`, `whiteboard-canvas-card.js`, `.github/workflows/validate.yaml`, and semantic version tags (`v1.1.0`) are active.
-2. **Fork the Official Repository**:
-   Fork [https://github.com/hacs/default](https://github.com/hacs/default) into your GitHub account.
-3. **Add Repository Entry to `plugin` File**:
-   In your fork, edit the `plugin` file (no file extension).  
-   > [!IMPORTANT]
-   > Entries must follow **strict alphabetical order**. `whiteboard-canvas-card` begins with `w` and is placed in the `lucayunxiao/...` section right after `lucayunxiao/tts-broadcast-card` (`t`):
-   ```text
-   ...
-   lucayunxiao/tts-broadcast-card
-   lucayunxiao/whiteboard-canvas-card
-   ...
-   ```
-4. **Submit Pull Request**:
-   Create a feature branch (`git checkout -b add-whiteboard-canvas-card`) and open a Pull Request against `hacs/default:master` using the official PR template.
-
----
-
 ## 📄 License
 
 This project is licensed under the [MIT License](LICENSE).
