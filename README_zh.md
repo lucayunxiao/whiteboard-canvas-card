@@ -187,32 +187,6 @@ shell_command:
     exec("try:\n b=req(\"https\")\nexcept Exception:\n b=req(\"http\")\nif len(b)>=4 and ((b[2]<<8)|b[3])>255:raise RuntimeError(f\"IPP error 0x{(b[2]<<8)|b[3]:04x}\")")' "{{ printer_ip }}" "{{ printer_port }}" "{{ c0 }}" "{{ c1 }}" "{{ c2 }}" "{{ c3 }}" "{{ c4 }}" "{{ c5 }}"
 ```
 
----
-
-## 🤝 官方 HACS 默认商店收录指南 (Include in Default)
-
-按照 [HACS 官方收录要求 (Publish - Include Before You Start)](https://www.hacs.xyz/docs/publish/include/#before-you-start) 执行：
-
-1. **本地质量核验**：
-   - 确认包含完整的 `hacs.json`、`whiteboard-canvas-card.js` 与 `.github/workflows/validate.yaml`，且 HACS Action 检查为 0 错误 0 警告；
-   - 创建标准语义化 Git Tag（如 `v1.1.0`）并在 GitHub 发布附带编译包资产的 Release。
-2. **Fork 官方仓库**：
-   在 GitHub 上访问并 Fork [https://github.com/hacs/default](https://github.com/hacs/default) 至个人账号。
-3. **在 `plugin` 文件中追加记录**：
-   在 Fork 仓库的根目录下编辑 `plugin` 纯文本文件。
-   > [!IMPORTANT]
-   > 官方要求条目必须按**严格字母升序 (Alphabetical Order)** 排列。`whiteboard-canvas-card` 首字母为 `w`，排在 `lucayunxiao/tts-broadcast-card` (`t`) **之后**：
-   ```text
-   ...
-   lucayunxiao/tts-broadcast-card
-   lucayunxiao/whiteboard-canvas-card
-   ...
-   ```
-4. **提交 Pull Request**：
-   创建功能分支（如 `git checkout -b add-whiteboard-canvas-card`），向 `hacs/default:master` 发起 PR，按要求勾选确认模板项，等待 CI 验证通过并由社区维护者合并。
-
----
-
 ## 📄 开源协议
 
 本项目采用 [MIT 许可证](LICENSE) 开源发布。
