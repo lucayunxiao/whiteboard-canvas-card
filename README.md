@@ -126,7 +126,7 @@ If the card has not yet appeared in your local HACS catalog cache:
 1. Download [`dist/whiteboard-canvas-card.js`](https://raw.githubusercontent.com/lucayunxiao/whiteboard-canvas-card/main/dist/whiteboard-canvas-card.js).
 2. Copy `whiteboard-canvas-card.js` into your Home Assistant directory under `<config>/www/`.
 3. In Home Assistant, navigate to **Settings > Dashboards > Resources**.
-4. Click **Add Resource**, set URL to `/local/whiteboard-canvas-card.js?v=1.1.2` and Resource type to `JavaScript Module`.
+4. Click **Add Resource**, set URL to `/local/whiteboard-canvas-card.js?v=1.1.3` and Resource type to `JavaScript Module`.
 5. Refresh your browser cache.
 
 ---

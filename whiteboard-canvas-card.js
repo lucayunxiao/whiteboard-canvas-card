@@ -28,7 +28,7 @@
   // Prevent duplicate registration
   if (customElements.get("whiteboard-canvas-card")) return;
 
-  const CARD_VERSION = "1.1.2";
+  const CARD_VERSION = "1.1.3";
   const DB_NAME = "CanvasCardDB";
   const DB_VERSION = 1;
   const STORE_NAME = "history";

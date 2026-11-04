@@ -126,7 +126,7 @@
 1. 下载 [`dist/whiteboard-canvas-card.js`](https://raw.githubusercontent.com/lucayunxiao/whiteboard-canvas-card/main/dist/whiteboard-canvas-card.js)；
 2. 将 `whiteboard-canvas-card.js` 复制到 Home Assistant 配置目录下的 `<config>/www/` 中；
 3. 进入 **设置 > 仪表盘 > 右上角三个点 > 资源**；
-4. 点击 **添加资源**，URL 填写 `/local/whiteboard-canvas-card.js?v=1.1.2`，资源类型选择 `JavaScript Module`；
+4. 点击 **添加资源**，URL 填写 `/local/whiteboard-canvas-card.js?v=1.1.3`，资源类型选择 `JavaScript Module`；
 5. 刷新浏览器缓存。
 
 ---
